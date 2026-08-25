@@ -72,12 +72,20 @@ class LinkOutcome(StrEnum):
 
 @dataclass(frozen=True, slots=True)
 class LinkResult:
+    """The outcome of one linking step, plus the resulting link when there is one."""
+
     outcome: LinkOutcome
     link: DiscordLink | None = None
 
 
 @dataclass(frozen=True)
 class DiscordLinkingService:
+    """The OAuth2 flow that binds an osu! account to a Discord account.
+
+    Every collaborator is a field, credentials included, so the flow tests
+    without touching Discord and stays off entirely when it is unconfigured.
+    """
+
     client_id: str
     client_secret: str
     redirect_uri: str

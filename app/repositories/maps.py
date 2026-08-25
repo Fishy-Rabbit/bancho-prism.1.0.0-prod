@@ -31,6 +31,13 @@ class MapServer(StrEnum):
 
 
 class MapsTable(Base):
+    """The ``maps`` table.
+
+    ``server`` joins ``id`` in the primary key, so a privately-hosted map and a
+    mirrored osu! map may share an id without colliding, and every query that
+    means "the osu! one" has to say so.
+    """
+
     __tablename__ = "maps"
 
     server = Column(
@@ -141,6 +148,8 @@ class MapSetInfo:
 
 
 class MapsRepository:
+    """Data access for ``maps``, scoped by ``server`` wherever a write could destroy a row."""
+
     def __init__(self, database: Database) -> None:
         self._database = database
 

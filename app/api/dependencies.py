@@ -129,12 +129,22 @@ def _write_file_atomically_blocking(path: Path, data: bytes) -> None:
 
 
 async def _write_file_atomically(path: Path, data: bytes) -> None:
+    """Write ``data`` to ``path`` without a reader ever seeing a partial file.
+
+    Runs the blocking half on a thread: an ``.osz`` can be tens of megabytes, and
+    doing it inline would stall every other request on this worker.
+    """
     # off the event loop: an .osz can be tens of megabytes, and blocking here
     # would stall every other request on this worker.
     await asyncio.to_thread(_write_file_atomically_blocking, path, data)
 
 
 def _remove_file(path: Path) -> None:
+    """Delete ``path`` if it is there.
+
+    Used both as rollback for a failed submission and as ordinary teardown, and
+    in neither case is an already-absent file an error.
+    """
     # missing_ok: this runs both as rollback cleanup (where a file may never have
     # been written) and as teardown, and neither case is an error.
     path.unlink(missing_ok=True)
@@ -160,6 +170,7 @@ def _evict_beatmap_cache(
 
 
 def _utc_now() -> datetime:
+    """The current time, as the submission pipeline stamps it."""
     return datetime.now()
 
 
@@ -286,6 +297,7 @@ async def _post_discord_token_exchange(
     url: str,
     data: dict[str, str],
 ) -> dict[str, Any]:
+    """POST the OAuth code exchange to Discord and return the decoded body."""
     response = await app.state.services.http_client.post(url, data=data)
     response.raise_for_status()
     return cast("dict[str, Any]", response.json())
@@ -295,12 +307,14 @@ async def _fetch_discord_identity(
     url: str,
     headers: dict[str, str],
 ) -> dict[str, Any]:
+    """GET the linked Discord account's identity with the freshly issued token."""
     response = await app.state.services.http_client.get(url, headers=headers)
     response.raise_for_status()
     return cast("dict[str, Any]", response.json())
 
 
 def _generate_oauth_state() -> str:
+    """A fresh, unguessable OAuth ``state`` token."""
     return secrets.token_urlsafe(32)
 
 
@@ -334,10 +348,12 @@ def get_comments_repository() -> CommentsRepository:
 
 
 def get_discord_links_repository() -> DiscordLinksRepository:
+    """The Discord link repository, bound to the shared database handle."""
     return DiscordLinksRepository(app.state.services.database)
 
 
 def get_discord_oauth_state_repository() -> DiscordOAuthStateRepository:
+    """The OAuth state repository, bound to the shared Redis handle."""
     return DiscordOAuthStateRepository(app.state.services.redis)
 
 
@@ -350,14 +366,17 @@ def get_ingame_logins_repository() -> IngameLoginsRepository:
 
 
 def get_map_id_sequence_repository() -> MapIdSequenceRepository:
+    """The private-id allocator, bound to the shared database handle."""
     return MapIdSequenceRepository(app.state.services.database)
 
 
 def get_map_submissions_repository() -> MapSubmissionsRepository:
+    """The submission-queue repository, bound to the shared database handle."""
     return MapSubmissionsRepository(app.state.services.database)
 
 
 def get_mapsets_repository() -> MapsetsRepository:
+    """The beatmap-set repository, bound to the shared database handle."""
     return MapsetsRepository(app.state.services.database)
 
 
@@ -736,6 +755,7 @@ def get_score_submission_service(
         Depends(get_user_achievements_repository),
     ],
 ) -> ScoreSubmissionService:
+    """The score submission service, wired to its repositories and every side effect it fires."""
     return ScoreSubmissionService(
         replays_path=REPLAYS_PATH,
         restriction_admin=app.state.sessions.bot,
@@ -839,6 +859,7 @@ def get_discord_linking_service(
         Depends(get_discord_oauth_state_repository),
     ],
 ) -> DiscordLinkingService:
+    """The Discord linking service, wired to its credentials, repositories and HTTP calls."""
     return DiscordLinkingService(
         client_id=settings.DISCORD_OAUTH_CLIENT_ID,
         client_secret=settings.DISCORD_OAUTH_CLIENT_SECRET,
@@ -864,6 +885,11 @@ def get_beatmap_submission_service(
         Depends(get_map_id_sequence_repository),
     ],
 ) -> BeatmapSubmissionService:
+    """The beatmap submission service, wired to its repositories, paths and configured limits.
+
+    This is where the ``.osz`` size and shape caps are turned from settings into
+    the :class:`OszLimits` the validator enforces.
+    """
     megabyte = 1024 * 1024
     return BeatmapSubmissionService(
         maps=maps,
@@ -900,6 +926,7 @@ def get_private_beatmap_files_service(
         Depends(get_map_submissions_repository),
     ],
 ) -> PrivateBeatmapFilesService:
+    """The service that resolves on-disk files for privately-hosted beatmaps."""
     return PrivateBeatmapFilesService(
         maps=maps,
         submissions=submissions,

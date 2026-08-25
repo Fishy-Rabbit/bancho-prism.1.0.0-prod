@@ -188,6 +188,11 @@ def escape_enum(
 
 
 def ensure_persistent_volumes_are_available() -> None:
+    """Create the data directories the server writes to, and fetch the assets it ships with.
+
+    Idempotent: every step is guarded, so a restart over an existing volume is a
+    no-op. ``osz`` joins the list for privately-hosted beatmap archives.
+    """
     # create /.data directory
     DATA_PATH.mkdir(exist_ok=True)
 

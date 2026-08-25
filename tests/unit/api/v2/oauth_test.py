@@ -38,6 +38,8 @@ _LINK = DiscordLink(
 
 
 class _FakeLinkingService:
+    """A linking service whose every answer is scripted, so the handlers test without Discord."""
+
     def __init__(
         self,
         *,
@@ -45,6 +47,7 @@ class _FakeLinkingService:
         complete_result: LinkResult | None = None,
         link: DiscordLink | None = None,
     ) -> None:
+        """Record the scripted authorize URL, completion result and link."""
         self._authorize_url = authorize_url
         self._complete_result = complete_result or LinkResult(
             LinkOutcome.LINKED,
@@ -56,17 +59,21 @@ class _FakeLinkingService:
         self.unlink_calls: list[int] = []
 
     async def begin_link(self, user_id: int) -> str | None:
+        """Return the scripted authorize URL, recording who asked."""
         self.begin_calls.append(user_id)
         return self._authorize_url
 
     async def complete_link(self, *, state: str, code: str) -> LinkResult:
+        """Return the scripted completion result, recording the state and code."""
         self.complete_calls.append({"state": state, "code": code})
         return self._complete_result
 
     async def fetch_link(self, user_id: int) -> DiscordLink | None:
+        """Return the scripted link, if any."""
         return self._link
 
     async def unlink(self, user_id: int) -> None:
+        """Record the unlink call."""
         self.unlink_calls.append(user_id)
 
 
@@ -74,18 +81,22 @@ class _FakeWebSessionsService:
     """Resolves a session cookie to a user, or None for an unknown token."""
 
     def __init__(self, *, user: Any = None) -> None:
+        """Record the scripted session user this fake resolves to."""
         self._user = user
 
     async def fetch_session_user(self, token: str) -> Any:
+        """Return the scripted session user, if any."""
         return self._user
 
 
 def _actor(user_id: int = 6) -> SimpleNamespace:
+    """A session user shaped like the handlers read one (they only touch ``.id``)."""
     # the handlers only read `.id` off the session user.
     return SimpleNamespace(id=user_id)
 
 
 def _body(response: Any) -> dict[str, Any]:
+    """The decoded JSON body of a response."""
     return orjson.loads(response.body)
 
 
@@ -93,6 +104,7 @@ def _body(response: Any) -> dict[str, Any]:
 
 
 async def test_authorize_without_a_cookie_is_401() -> None:
+    """No session means 401, and the service is never asked to begin a flow."""
     linking = _FakeLinkingService()
     sessions = _FakeWebSessionsService(user=None)
 
@@ -107,6 +119,7 @@ async def test_authorize_without_a_cookie_is_401() -> None:
 
 
 async def test_authorize_with_an_unknown_session_is_401() -> None:
+    """A cookie that resolves to no user is treated as no session at all."""
     linking = _FakeLinkingService()
     sessions = _FakeWebSessionsService(user=None)
 
@@ -121,6 +134,7 @@ async def test_authorize_with_an_unknown_session_is_401() -> None:
 
 
 async def test_authorize_when_disabled_is_503() -> None:
+    """With the integration unconfigured, authorize answers 503 rather than a broken redirect."""
     linking = _FakeLinkingService(authorize_url=None)
     sessions = _FakeWebSessionsService(user=_actor(6))
 
@@ -134,6 +148,7 @@ async def test_authorize_when_disabled_is_503() -> None:
 
 
 async def test_authorize_returns_the_url_for_the_session_user() -> None:
+    """The flow is begun for the account behind the SESSION, never for an account named in a parameter."""
     linking = _FakeLinkingService(authorize_url="https://discord.com/authorize?x=1")
     sessions = _FakeWebSessionsService(user=_actor(6))
 
@@ -155,6 +170,7 @@ async def test_authorize_returns_the_url_for_the_session_user() -> None:
 
 
 async def test_callback_without_code_or_state_is_400() -> None:
+    """A callback missing either parameter is 400 in our envelope, and never reaches the service."""
     linking = _FakeLinkingService()
 
     missing_code = await oauth_api.complete_discord_link(
@@ -175,6 +191,7 @@ async def test_callback_without_code_or_state_is_400() -> None:
 
 
 async def test_callback_links_and_returns_the_link() -> None:
+    """A good callback links the account and returns it, passing state and code straight through."""
     linking = _FakeLinkingService(
         complete_result=LinkResult(LinkOutcome.LINKED, link=_LINK),
     )
@@ -195,6 +212,7 @@ async def test_callback_links_and_returns_the_link() -> None:
 
 
 async def test_callback_maps_each_failure_outcome_to_its_status() -> None:
+    """Every failure outcome maps to its own status code, all in the error envelope."""
     cases = {
         LinkOutcome.DISABLED: 503,
         LinkOutcome.INVALID_STATE: 400,
@@ -219,6 +237,7 @@ async def test_callback_maps_each_failure_outcome_to_its_status() -> None:
 
 
 async def test_get_link_without_a_cookie_is_401() -> None:
+    """Reading a link requires a session."""
     linking = _FakeLinkingService(link=_LINK)
     sessions = _FakeWebSessionsService(user=None)
 
@@ -232,6 +251,7 @@ async def test_get_link_without_a_cookie_is_401() -> None:
 
 
 async def test_get_link_when_none_exists_is_404() -> None:
+    """An account with no link reads as 404."""
     linking = _FakeLinkingService(link=None)
     sessions = _FakeWebSessionsService(user=_actor(6))
 
@@ -245,6 +265,7 @@ async def test_get_link_when_none_exists_is_404() -> None:
 
 
 async def test_get_link_returns_the_current_link() -> None:
+    """An account with a link gets it back."""
     linking = _FakeLinkingService(link=_LINK)
     sessions = _FakeWebSessionsService(user=_actor(6))
 
@@ -262,6 +283,7 @@ async def test_get_link_returns_the_current_link() -> None:
 
 
 async def test_delete_link_without_a_cookie_is_401() -> None:
+    """Unlinking requires a session, and unauthenticated calls never reach the service."""
     linking = _FakeLinkingService()
     sessions = _FakeWebSessionsService(user=None)
 
@@ -276,6 +298,7 @@ async def test_delete_link_without_a_cookie_is_401() -> None:
 
 
 async def test_delete_link_unlinks_the_session_user() -> None:
+    """Unlink is delegated for the account behind the session, and is idempotent."""
     linking = _FakeLinkingService()
     sessions = _FakeWebSessionsService(user=_actor(6))
 

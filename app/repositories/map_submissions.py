@@ -66,6 +66,12 @@ class MapSubmissionReviewState(StrEnum):
 
 
 class MapSubmissionsTable(Base):
+    """One row per submitted set, keyed by the privately-allocated set id.
+
+    The id is never generated here: it comes from :mod:`app.repositories.map_id_sequence`,
+    which is what keeps it out of osu!'s id space.
+    """
+
     __tablename__ = "map_submissions"
 
     # the privately-allocated set id; never generated here, always supplied.
@@ -135,6 +141,8 @@ READ_PARAMS = (
 
 @dataclass(frozen=True, slots=True)
 class MapSubmission:
+    """A submission row as the rest of the codebase sees it."""
+
     set_id: int
     submitter_user_id: int
     review_state: str
@@ -150,10 +158,14 @@ class MapSubmission:
 
 
 class MapSubmissionsRepository:
+    """Reads and writes the submission queue behind beatmap uploads."""
+
     def __init__(self, database: Database) -> None:
+        """Bind the repository to a database handle."""
         self._database = database
 
     def _deserialize(self, row: MySQLRow) -> MapSubmission:
+        """Turn one database row into a :class:`MapSubmission`."""
         return MapSubmission(
             set_id=row["set_id"],
             submitter_user_id=row["submitter_user_id"],
@@ -170,6 +182,11 @@ class MapSubmissionsRepository:
         )
 
     async def _fetch(self, set_id: int) -> MapSubmission:
+        """The submission for ``set_id``, asserting it exists.
+
+        Only called immediately after a write in the same request, which is what
+        makes the assert safe rather than optimistic.
+        """
         submission = await self.fetch_one(set_id)
         assert submission is not None  # written immediately before every call site.
         return submission

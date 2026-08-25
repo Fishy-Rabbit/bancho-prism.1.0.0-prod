@@ -341,6 +341,13 @@ async def calculate_score_submission_status(
     fail_time: int,
     ensure_osu_file_is_available: OsuFileAvailabilityChecker,
 ) -> None:
+    """Rate a submitted score and decide what it counts as, in place.
+
+    Sets ``acc``, ``pp``, ``sr`` and ``status`` on ``score``. All four are
+    assigned before anything that can fail, because they are bare annotations on
+    :class:`Score` with no defaults, and an unset one turns a rating failure into
+    a discarded play.
+    """
     assert score.bmap is not None
 
     # all data read from submission.
@@ -885,6 +892,12 @@ def _no_discord_announce(
 
 @dataclass(frozen=True)
 class ScoreSubmissionService:
+    """The score submission transaction: authenticate, rate, persist, and fire the announcements.
+
+    Every collaborator and side effect is a field, so submission exercises without
+    a live bancho session, a webhook, or a replay on disk.
+    """
+
     replays_path: Path
     restriction_admin: Player
     fetch_beatmap: BeatmapFetcher
@@ -1034,6 +1047,12 @@ class ScoreSubmissionService:
         self,
         request: ScoreSubmissionRequest,
     ) -> SubmittedScore | ScoreSubmissionError:
+        """Handle one score submission end to end.
+
+        Returns the stored score, or a :class:`ScoreSubmissionError` naming why it was
+        refused. Errors are values rather than exceptions here because most of them
+        are ordinary answers the game client expects to get back.
+        """
         beatmap_md5 = score_submission_beatmap_md5(request)
         beatmap = await self.fetch_beatmap(beatmap_md5)
         if beatmap is None:

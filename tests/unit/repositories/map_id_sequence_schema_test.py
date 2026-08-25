@@ -31,6 +31,7 @@ _SEED_PATTERN = re.compile(
 
 
 def test_base_schema_seeds_the_sequence_at_the_private_floor() -> None:
+    """``base.sql`` seeds the sequence exactly at the floor the repository enforces."""
     seeds = _SEED_PATTERN.findall(_BASE_SQL)
 
     assert seeds, "base.sql must seed map_id_sequence's auto_increment"
@@ -40,6 +41,7 @@ def test_base_schema_seeds_the_sequence_at_the_private_floor() -> None:
 
 
 def test_the_migration_seeds_the_sequence_too() -> None:
+    """``migrations.sql`` carries the same seed, since an existing database never reads ``base.sql``."""
     # an existing database upgrades through migrations.sql and never reads
     # base.sql, so the seed has to be in both or one path is unprotected.
     seeds = _SEED_PATTERN.findall(_MIGRATIONS_SQL)
@@ -48,6 +50,7 @@ def test_the_migration_seeds_the_sequence_too() -> None:
 
 
 def test_the_floor_stays_inside_signed_int32() -> None:
+    """The floor fits a signed int and still leaves millions of ids to allocate."""
     # `maps.id` is a signed int; an id past this ceiling cannot be stored.
     assert PRIVATE_BEATMAP_ID_FLOOR < 2**31 - 1
     # and it must leave room to actually allocate into.
@@ -55,12 +58,14 @@ def test_the_floor_stays_inside_signed_int32() -> None:
 
 
 def test_both_schemas_declare_the_sequence_and_submissions_tables() -> None:
+    """Both schema files declare ``map_id_sequence`` and ``map_submissions``."""
     for sql, source in ((_BASE_SQL, "base.sql"), (_MIGRATIONS_SQL, "migrations.sql")):
         assert "create table map_id_sequence" in sql, source
         assert "create table map_submissions" in sql, source
 
 
 def test_maps_creator_holds_any_local_username() -> None:
+    """``maps.creator`` is wide enough for any local username, in both schema files."""
     # `users.name` is varchar(32); a privately-hosted map's creator is a local
     # account, so a narrower column would truncate or reject the write.
     assert re.search(r"name\s+varchar\(32\)", _BASE_SQL) is not None

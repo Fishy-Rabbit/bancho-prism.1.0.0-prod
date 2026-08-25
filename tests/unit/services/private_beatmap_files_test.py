@@ -47,6 +47,7 @@ def _map(
     artist: str = "Camellia",
     title: str = "Ghost",
 ) -> Map:
+    """A ``maps`` row shaped like the service reads one."""
     return Map(
         id=map_id,
         server=server,
@@ -79,6 +80,7 @@ def _submission(
     set_id: int = _SET_ID,
     review_state: str = MapSubmissionReviewState.APPROVED.value,
 ) -> MapSubmission:
+    """A submission row in the given review state."""
     return MapSubmission(
         set_id=set_id,
         submitter_user_id=6,
@@ -96,7 +98,10 @@ def _submission(
 
 
 class _FakeMapsRepository:
+    """A maps repository backed by a list of rows."""
+
     def __init__(self, rows: list[Map] | None = None) -> None:
+        """Start with the given map rows."""
         self.rows = rows or []
 
     async def fetch_one(
@@ -105,6 +110,7 @@ class _FakeMapsRepository:
         md5: str | None = None,
         filename: str | None = None,
     ) -> Map | None:
+        """The first row matching the given filter, or None."""
         for row in self.rows:
             if filename is not None and row.filename == filename:
                 return row
@@ -120,6 +126,7 @@ class _FakeMapsRepository:
         set_id: int | None = None,
         **_: Any,
     ) -> list[Map]:
+        """Every row belonging to the given set."""
         return [
             row
             for row in self.rows
@@ -129,10 +136,14 @@ class _FakeMapsRepository:
 
 
 class _FakeSubmissionsRepository:
+    """A submissions repository backed by a list of rows."""
+
     def __init__(self, rows: list[MapSubmission] | None = None) -> None:
+        """Start with the given submission rows."""
         self.rows = rows or []
 
     async def fetch_one(self, set_id: int) -> MapSubmission | None:
+        """The submission for a set id, or None."""
         return next((row for row in self.rows if row.set_id == set_id), None)
 
 
@@ -142,6 +153,7 @@ def _service(
     maps: list[Map] | None = None,
     submissions: list[MapSubmission] | None = None,
 ) -> PrivateBeatmapFilesService:
+    """A service over fake repositories and a temporary directory tree."""
     beatmaps_path = tmp_path / "osu"
     archives_path = tmp_path / "osz"
     beatmaps_path.mkdir(exist_ok=True)
@@ -158,6 +170,7 @@ def _service(
 
 
 async def test_a_hosted_difficulty_resolves_to_its_file(tmp_path: Path) -> None:
+    """A hosted difficulty resolves to its ``.osu`` on disk."""
     service = _service(tmp_path, maps=[_map()])
     (tmp_path / "osu" / f"{_MAP_ID}.osu").write_text("osu file format v14")
 
@@ -168,6 +181,7 @@ async def test_a_hosted_difficulty_resolves_to_its_file(tmp_path: Path) -> None:
 
 
 async def test_a_mirrored_map_is_not_served_as_ours(tmp_path: Path) -> None:
+    """A row that belongs to osu! is not served from our path, which would hand back the wrong bytes for a real beatmap."""
     # the row exists but belongs to osu!; serving our path would hand back the
     # wrong bytes for a real beatmap.
     service = _service(tmp_path, maps=[_map(server=MapServer.OSU.value)])
@@ -177,12 +191,14 @@ async def test_a_mirrored_map_is_not_served_as_ours(tmp_path: Path) -> None:
 
 
 async def test_an_unknown_filename_is_not_ours(tmp_path: Path) -> None:
+    """A filename we do not host resolves to nothing."""
     service = _service(tmp_path, maps=[_map()])
 
     assert await service.fetch_osu_file("something else.osu") is None
 
 
 async def test_a_hosted_row_whose_file_vanished_falls_back(tmp_path: Path) -> None:
+    """A row whose file is gone resolves to nothing, so the caller redirects instead of 500-ing at the client."""
     # no file written: the caller must redirect rather than 500 at the client.
     service = _service(tmp_path, maps=[_map()])
 
@@ -193,6 +209,7 @@ async def test_a_hosted_row_whose_file_vanished_falls_back(tmp_path: Path) -> No
 
 
 async def test_a_hosted_set_resolves_to_its_archive(tmp_path: Path) -> None:
+    """An approved set resolves to its ``.osz`` under the download name osu! expects."""
     service = _service(tmp_path, maps=[_map()], submissions=[_submission()])
     (tmp_path / "osz" / f"{_SET_ID}.osz").write_bytes(b"PK\x03\x04")
 
@@ -205,6 +222,7 @@ async def test_a_hosted_set_resolves_to_its_archive(tmp_path: Path) -> None:
 
 
 async def test_an_id_below_the_private_floor_is_never_ours(tmp_path: Path) -> None:
+    """An id beneath the private floor cannot be ours, so it is answered without a lookup."""
     # a real mirror id cannot reach the private range, so this needs no lookup.
     service = _service(
         tmp_path,
@@ -217,12 +235,14 @@ async def test_an_id_below_the_private_floor_is_never_ours(tmp_path: Path) -> No
 
 
 async def test_an_unknown_set_is_not_ours(tmp_path: Path) -> None:
+    """A set we do not host resolves to nothing."""
     service = _service(tmp_path)
 
     assert await service.fetch_osz_archive(_SET_ID) is None
 
 
 async def test_a_pending_set_is_not_downloadable(tmp_path: Path) -> None:
+    """The download endpoint does not become the way around the API's refusal to show a pending submission."""
     # the API refuses to show a pending submission; the download endpoint must not
     # become the way around that.
     service = _service(
@@ -238,6 +258,7 @@ async def test_a_pending_set_is_not_downloadable(tmp_path: Path) -> None:
 
 
 async def test_a_rejected_set_is_not_downloadable(tmp_path: Path) -> None:
+    """A rejected set is not downloadable either."""
     service = _service(
         tmp_path,
         maps=[_map()],
@@ -253,6 +274,7 @@ async def test_a_rejected_set_is_not_downloadable(tmp_path: Path) -> None:
 async def test_an_approved_set_whose_archive_vanished_falls_back(
     tmp_path: Path,
 ) -> None:
+    """An approved set whose archive is gone resolves to nothing rather than raising."""
     service = _service(tmp_path, maps=[_map()], submissions=[_submission()])
 
     assert await service.fetch_osz_archive(_SET_ID) is None
@@ -261,6 +283,7 @@ async def test_an_approved_set_whose_archive_vanished_falls_back(
 async def test_a_set_with_no_maps_still_gets_a_download_name(
     tmp_path: Path,
 ) -> None:
+    """A set with no map rows still produces a usable download name instead of crashing on one."""
     # defensive: the archive is what matters, and a set with no rows should not
     # crash on building a display name.
     service = _service(tmp_path, submissions=[_submission()])

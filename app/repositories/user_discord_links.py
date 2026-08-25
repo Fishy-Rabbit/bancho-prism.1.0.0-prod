@@ -48,6 +48,12 @@ _DISCORD_USERNAME_MAX_LEN = 32
 
 
 class UserDiscordLinksTable(Base):
+    """One row per linked account, keyed by the osu! ``user_id``.
+
+    The key is the osu! side, so an account can hold at most one Discord link;
+    relinking replaces rather than accumulates.
+    """
+
     __tablename__ = "user_discord_links"
 
     # users.id is Integer elsewhere; mirror it. autoincrement is disabled: the
@@ -83,6 +89,8 @@ READ_PARAMS = (
 
 @dataclass(frozen=True, slots=True)
 class DiscordLink:
+    """A link row as the rest of the codebase sees it."""
+
     user_id: int
     discord_id: str
     discord_username: str
@@ -90,10 +98,14 @@ class DiscordLink:
 
 
 class DiscordLinksRepository:
+    """Reads and writes the osu! account to Discord account mapping."""
+
     def __init__(self, database: Database) -> None:
+        """Bind the repository to a database handle."""
         self._database = database
 
     def _deserialize(self, row: MySQLRow) -> DiscordLink:
+        """Turn one database row into a :class:`DiscordLink`."""
         return DiscordLink(
             user_id=row["user_id"],
             discord_id=row["discord_id"],
@@ -102,6 +114,11 @@ class DiscordLinksRepository:
         )
 
     async def _fetch(self, user_id: int) -> DiscordLink:
+        """The link for ``user_id``, asserting it exists.
+
+        Only called immediately after a write in the same request, which is what
+        makes the assert safe rather than optimistic.
+        """
         select_stmt = select(*READ_PARAMS).where(
             UserDiscordLinksTable.user_id == user_id,
         )

@@ -183,6 +183,10 @@ def repack_osz(data: bytes, *, replacements: Mapping[str, OszOsuMember]) -> byte
 
 
 def _open_archive(data: bytes) -> zipfile.ZipFile:
+    """Open the upload as a zip, both zipfile failure modes folded into :class:`OszArchiveError`.
+
+    A corrupt upload is a rejected upload, not a crash.
+    """
     try:
         return zipfile.ZipFile(io.BytesIO(data))
     except (zipfile.BadZipFile, zipfile.LargeZipFile) as exc:
@@ -190,6 +194,13 @@ def _open_archive(data: bytes) -> zipfile.ZipFile:
 
 
 def _validate_member(info: zipfile.ZipInfo, *, limits: OszLimits) -> None:
+    """Reject one archive member that must never be extracted.
+
+    Catches an empty or NUL-bearing name, an absolute path, a drive letter, a
+    ``..`` traversal, a symlink, and a member whose OWN compression ratio marks
+    it as a bomb. Per member on purpose: a single hostile entry hides easily
+    inside an archive whose totals look ordinary.
+    """
     name = info.filename
 
     if not name:
@@ -221,6 +232,7 @@ def _validate_member(info: zipfile.ZipInfo, *, limits: OszLimits) -> None:
 
 
 def _decode_osu_member(raw: bytes, name: str) -> str:
+    """Decode a ``.osu`` member as strict UTF-8, tolerating a BOM."""
     # strict UTF-8: a difficulty we cannot decode losslessly is one we cannot
     # rewrite and re-serve without corrupting it.
     try:

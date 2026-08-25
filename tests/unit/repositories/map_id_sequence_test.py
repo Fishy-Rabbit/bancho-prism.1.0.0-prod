@@ -32,20 +32,24 @@ class _FakeDatabase:
     """Hands back scripted insert ids, recording the statements it was given."""
 
     def __init__(self, *, insert_ids: list[int]) -> None:
+        """Record the scripted insert ids this fake will return."""
         self._insert_ids = list(insert_ids)
         self.statements: list[dict[str, Any]] = []
 
     async def execute(self, statement: Any) -> int:
+        """Return the next scripted insert id, recording the statement's values."""
         self.statements.append(statement.compile().params)
         return self._insert_ids.pop(0)
 
 
 def _repo(*, insert_ids: list[int]) -> tuple[MapIdSequenceRepository, _FakeDatabase]:
+    """A repository over a fake database that hands back scripted insert ids."""
     database = _FakeDatabase(insert_ids=insert_ids)
     return MapIdSequenceRepository(database), database  # type: ignore[arg-type]
 
 
 async def test_allocate_returns_the_new_row_id() -> None:
+    """Allocation returns the inserted row's id and records what it was for and who asked."""
     repository, database = _repo(insert_ids=[PRIVATE_BEATMAP_ID_FLOOR])
 
     allocated = await repository.allocate(kind=MapIdKind.SET, allocated_by=6)
@@ -57,6 +61,7 @@ async def test_allocate_returns_the_new_row_id() -> None:
 
 
 async def test_allocate_rejects_an_id_below_the_private_floor() -> None:
+    """An id below the floor raises, and the message names the missing seed, because this is only ever read during an incident."""
     # what a database restored without the auto_increment seed would return.
     repository, _ = _repo(insert_ids=[1])
 
@@ -69,6 +74,7 @@ async def test_allocate_rejects_an_id_below_the_private_floor() -> None:
 
 
 async def test_allocate_rejects_an_id_just_under_the_floor() -> None:
+    """The floor is exclusive of everything beneath it, not merely of small ids."""
     repository, _ = _repo(insert_ids=[PRIVATE_BEATMAP_ID_FLOOR - 1])
 
     with pytest.raises(BeatmapIdAllocationError):
@@ -76,6 +82,7 @@ async def test_allocate_rejects_an_id_just_under_the_floor() -> None:
 
 
 async def test_allocate_many_returns_distinct_ids_in_order() -> None:
+    """Bulk allocation returns distinct ids in order, one insert each."""
     ids = [PRIVATE_BEATMAP_ID_FLOOR + offset for offset in range(3)]
     repository, database = _repo(insert_ids=ids)
 
@@ -91,6 +98,7 @@ async def test_allocate_many_returns_distinct_ids_in_order() -> None:
 
 
 async def test_allocate_many_of_zero_touches_nothing() -> None:
+    """Asking for zero ids issues no statements."""
     repository, database = _repo(insert_ids=[])
 
     allocated = await repository.allocate_many(
@@ -104,6 +112,7 @@ async def test_allocate_many_of_zero_touches_nothing() -> None:
 
 
 async def test_allocate_many_propagates_a_bad_floor() -> None:
+    """The floor guard cannot be bypassed by going through the bulk path."""
     # the guard must not be bypassable by going through the bulk path.
     repository, _ = _repo(insert_ids=[PRIVATE_BEATMAP_ID_FLOOR, 2])
 

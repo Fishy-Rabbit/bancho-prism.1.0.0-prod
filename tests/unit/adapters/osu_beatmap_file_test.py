@@ -47,6 +47,7 @@ def _osu_file(
     hit_objects: str = "256,192,1000,1,0\n256,192,4000,1,0",
     newline: str = "\n",
 ) -> str:
+    """A ``.osu`` file assembled from the given sections and line ending."""
     return newline.join(
         [
             f"osu file format v{format_version}",
@@ -74,6 +75,7 @@ def _osu_file(
 
 
 def test_parses_every_stored_field() -> None:
+    """Every field the ``maps`` row needs comes back off a well-formed file."""
     parsed = parse_osu_file(_osu_file())
 
     assert parsed.format_version == 14
@@ -89,11 +91,13 @@ def test_parses_every_stored_field() -> None:
 
 
 def test_absent_mode_is_osu_standard() -> None:
+    """A file with no ``Mode`` is osu!standard, which is how old files express it."""
     parsed = parse_osu_file(_osu_file(general="AudioFilename: audio.mp3"))
     assert parsed.mode == 0
 
 
 def test_comments_and_unknown_sections_are_ignored() -> None:
+    """Comments and sections we do not read are skipped rather than rejected."""
     text = _osu_file().replace(
         "[HitObjects]",
         "[Editor]\nBookmarks: 1,2\n\n// a comment\n[HitObjects]",
@@ -105,6 +109,7 @@ def test_comments_and_unknown_sections_are_ignored() -> None:
 
 
 def test_absent_approach_rate_falls_back_to_overall_difficulty() -> None:
+    """Pre-v8 files have no AR, so it falls back to OD; reading 0.0 would publish every old map as AR 0."""
     # pre-v8 files have no ApproachRate; osu! reuses OverallDifficulty. Reading
     # it as 0.0 would publish every old map as AR 0.
     parsed = parse_osu_file(
@@ -122,6 +127,7 @@ def test_absent_approach_rate_falls_back_to_overall_difficulty() -> None:
 
 
 def test_bpm_is_the_tempo_in_effect_longest() -> None:
+    """The headline BPM is the duration-weighted one, not the first and not the fastest."""
     # 200 BPM for the first 5s, then 120 BPM for a minute. The headline BPM is
     # the dominant one, not the first and not the fastest.
     parsed = parse_osu_file(
@@ -135,6 +141,7 @@ def test_bpm_is_the_tempo_in_effect_longest() -> None:
 
 
 def test_inherited_timing_points_never_set_the_bpm() -> None:
+    """An inherited point's negative beat length is a slider-velocity percentage, not a tempo."""
     # an inherited point's negative "beatLength" is a slider-velocity percentage,
     # not a tempo; treating it as one yields a negative or nonsense BPM.
     parsed = parse_osu_file(
@@ -145,12 +152,14 @@ def test_inherited_timing_points_never_set_the_bpm() -> None:
 
 
 def test_old_timing_points_without_the_uninherited_flag_are_accepted() -> None:
+    """Pre-v6 timing lines carry only ``time,beatLength`` and are read with the flag implied."""
     # pre-v6 lines carry only `time,beatLength`.
     parsed = parse_osu_file(_osu_file(timing_points="0,250"))
     assert parsed.bpm == 240.0
 
 
 def test_no_uninherited_timing_point_is_rejected() -> None:
+    """A file with no real tempo at all is refused rather than rated at 0 BPM."""
     with pytest.raises(OsuFileParseError, match="uninherited"):
         parse_osu_file(_osu_file(timing_points="0,-50,4,2,0,60,0,0"))
 
@@ -159,6 +168,7 @@ def test_no_uninherited_timing_point_is_rejected() -> None:
 
 
 def test_spinner_end_time_extends_the_length() -> None:
+    """A spinner's stated end time counts toward the map's length."""
     # type 12 = spinner (8) + new combo (4); field 5 is its end time.
     parsed = parse_osu_file(
         _osu_file(hit_objects="256,192,1000,1,0\n256,192,2000,12,0,9000,0:0:0:0:"),
@@ -168,6 +178,7 @@ def test_spinner_end_time_extends_the_length() -> None:
 
 
 def test_mania_hold_end_time_extends_the_length() -> None:
+    """A mania hold's end time counts toward the map's length."""
     # type 128 = mania hold; its end time is `endTime:hitSample`.
     parsed = parse_osu_file(
         _osu_file(
@@ -181,6 +192,7 @@ def test_mania_hold_end_time_extends_the_length() -> None:
 
 
 def test_a_trailing_slider_is_measured_from_its_start() -> None:
+    """A documented divergence: a slider's duration is not in the file, so a map ending on one under-reports by its length."""
     # documented divergence: a slider's duration is not in the file, so the map
     # can under-report by that one slider's length.
     parsed = parse_osu_file(
@@ -191,6 +203,7 @@ def test_a_trailing_slider_is_measured_from_its_start() -> None:
 
 
 def test_no_hit_objects_is_rejected() -> None:
+    """A file with no hit objects is not a playable difficulty."""
     with pytest.raises(OsuFileParseError, match="hit objects"):
         parse_osu_file(_osu_file(hit_objects=""))
 
@@ -199,6 +212,7 @@ def test_no_hit_objects_is_rejected() -> None:
 
 
 def test_mania_accepts_a_key_count_above_ten() -> None:
+    """In mania, CircleSize is the key count and may exceed the 0..10 stat range."""
     # in mania CircleSize is the key count (up to 18), not a 0..10 stat.
     parsed = parse_osu_file(
         _osu_file(
@@ -210,6 +224,7 @@ def test_mania_accepts_a_key_count_above_ten() -> None:
 
 
 def test_an_impossible_key_count_is_rejected() -> None:
+    """A key count past what mania supports is still refused."""
     with pytest.raises(OsuFileParseError, match="CircleSize"):
         parse_osu_file(
             _osu_file(
@@ -220,6 +235,7 @@ def test_an_impossible_key_count_is_rejected() -> None:
 
 
 def test_standard_rejects_a_circle_size_above_ten() -> None:
+    """Outside mania, CircleSize keeps its 0..10 bound."""
     with pytest.raises(OsuFileParseError, match="CircleSize"):
         parse_osu_file(
             _osu_file(difficulty="HPDrainRate:5\nCircleSize:11\nOverallDifficulty:8"),
@@ -230,16 +246,19 @@ def test_standard_rejects_a_circle_size_above_ten() -> None:
 
 
 def test_a_missing_header_is_rejected() -> None:
+    """A file with no format header is not a beatmap."""
     with pytest.raises(OsuFileParseError, match="header"):
         parse_osu_file("[Metadata]\nArtist:x\n")
 
 
 def test_an_unsupported_format_version_is_rejected() -> None:
+    """A version outside the supported range is refused rather than guessed at."""
     with pytest.raises(OsuFileParseError, match="format"):
         parse_osu_file(_osu_file(format_version=1))
 
 
 def test_an_empty_file_is_rejected() -> None:
+    """An empty file is refused."""
     with pytest.raises(OsuFileParseError, match="empty"):
         parse_osu_file("")
 
@@ -249,6 +268,7 @@ def test_an_empty_file_is_rejected() -> None:
     ["General", "Metadata", "Difficulty", "TimingPoints", "HitObjects"],
 )
 def test_every_required_section_is_required(section: str) -> None:
+    """Each required section is required, and the error names the missing one."""
     text = _osu_file().replace(f"[{section}]", "[Unused]")
 
     with pytest.raises(OsuFileParseError, match=section):
@@ -257,6 +277,7 @@ def test_every_required_section_is_required(section: str) -> None:
 
 @pytest.mark.parametrize("field", ["Artist", "Title", "Version"])
 def test_required_metadata_fields_are_required(field: str) -> None:
+    """Each required metadata field is required, and the error names it."""
     text = _osu_file().replace(f"{field}:", "Unused:")
 
     with pytest.raises(OsuFileParseError, match=field):
@@ -268,6 +289,7 @@ def test_required_metadata_fields_are_required(field: str) -> None:
     ["HPDrainRate", "CircleSize", "OverallDifficulty"],
 )
 def test_required_difficulty_fields_are_required(field: str) -> None:
+    """Each required difficulty field is required, and the error names it."""
     text = _osu_file().replace(f"{field}:", "Unused:")
 
     with pytest.raises(OsuFileParseError, match=field):
@@ -275,6 +297,7 @@ def test_required_difficulty_fields_are_required(field: str) -> None:
 
 
 def test_a_non_numeric_difficulty_value_is_rejected() -> None:
+    """A difficulty value that is not a number is refused."""
     with pytest.raises(OsuFileParseError, match="OverallDifficulty"):
         parse_osu_file(
             _osu_file(difficulty="HPDrainRate:5\nCircleSize:4\nOverallDifficulty:hard"),
@@ -282,6 +305,7 @@ def test_a_non_numeric_difficulty_value_is_rejected() -> None:
 
 
 def test_an_unsupported_mode_is_rejected() -> None:
+    """A gamemode outside 0..3 is refused, since it is one we cannot rate."""
     with pytest.raises(OsuFileParseError, match="Mode"):
         parse_osu_file(_osu_file(general="Mode: 7"))
 
@@ -290,6 +314,7 @@ def test_an_unsupported_mode_is_rejected() -> None:
 
 
 def _metadata_lines(text: str) -> list[str]:
+    """The non-empty lines of the rewritten file's ``[Metadata]`` section."""
     lines = text.splitlines()
     start = lines.index("[Metadata]") + 1
     end = next(
@@ -300,6 +325,7 @@ def _metadata_lines(text: str) -> list[str]:
 
 
 def test_rewrite_replaces_the_identity_fields() -> None:
+    """Rewriting stamps our ids and creator in, and the ids the upload arrived with are gone, so the client cannot file the map under whatever it was derived from."""
     rewritten = rewrite_osu_file_identity(
         _osu_file(),
         beatmap_id=2_000_000_001,
@@ -319,6 +345,7 @@ def test_rewrite_replaces_the_identity_fields() -> None:
 
 
 def test_rewrite_appends_identity_fields_when_absent() -> None:
+    """Identity fields absent from the upload are appended inside ``[Metadata]``, not leaked into the next section."""
     rewritten = rewrite_osu_file_identity(
         _osu_file(metadata="Artist:a\nTitle:t\nVersion:v"),
         beatmap_id=7,
@@ -335,6 +362,7 @@ def test_rewrite_appends_identity_fields_when_absent() -> None:
 
 
 def test_rewrite_changes_only_the_identity_lines() -> None:
+    """Nothing but the three identity lines changes."""
     original = _osu_file()
     rewritten = rewrite_osu_file_identity(
         original,
@@ -348,6 +376,7 @@ def test_rewrite_changes_only_the_identity_lines() -> None:
 
 
 def test_rewrite_preserves_crlf_line_endings() -> None:
+    """A CRLF file stays CRLF throughout."""
     rewritten = rewrite_osu_file_identity(
         _osu_file(newline="\r\n"),
         beatmap_id=7,
@@ -360,6 +389,7 @@ def test_rewrite_preserves_crlf_line_endings() -> None:
 
 
 def test_a_rewritten_file_still_parses() -> None:
+    """The rewritten file parses back to the same beatmap."""
     rewritten = rewrite_osu_file_identity(
         _osu_file(),
         beatmap_id=7,
@@ -376,6 +406,7 @@ def test_a_rewritten_file_still_parses() -> None:
 
 
 def test_filename_matches_the_osuapi_convention() -> None:
+    """The filename is built by the exact expression the mirrored path uses, so a hosted row is indistinguishable to every filename lookup."""
     # the exact expression `Beatmap._parse_from_osuapi_resp` uses.
     expected = "{artist} - {title} ({creator}) [{version}].osu".format(
         artist="Camellia",
@@ -396,6 +427,7 @@ def test_filename_matches_the_osuapi_convention() -> None:
 
 
 def test_filename_strips_filesystem_hostile_characters() -> None:
+    """Characters the filesystem rejects are stripped, and the extension survives."""
     filename = canonical_osu_filename(
         artist="a/b",
         title='t:"x"',
@@ -408,6 +440,7 @@ def test_filename_strips_filesystem_hostile_characters() -> None:
 
 
 def test_filename_is_truncated_but_keeps_its_extension() -> None:
+    """An over-long name is truncated within the cap and keeps its extension."""
     filename = canonical_osu_filename(
         artist="a" * 300,
         title="t",
@@ -420,5 +453,6 @@ def test_filename_is_truncated_but_keeps_its_extension() -> None:
 
 
 def test_filename_that_would_be_empty_is_rejected() -> None:
+    """Metadata that would produce an empty filename is refused."""
     with pytest.raises(OsuFileParseError, match="filename"):
         canonical_osu_filename(artist="/", title="/", creator="/", version="/")

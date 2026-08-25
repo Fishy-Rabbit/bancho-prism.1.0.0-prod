@@ -78,6 +78,12 @@ async def begin_discord_link(
         Depends(api_dependencies.get_web_sessions_service),
     ],
 ) -> Success[DiscordAuthorizeModel] | Failure:
+    """Start a Discord link and hand back the authorize URL to send the player to.
+
+    The ``state`` token minted here is bound to the calling account, which is what
+    makes the callback link Discord to the account that ASKED rather than to
+    whoever's session arrives with it.
+    """
     if session_token is None:
         return responses.failure(
             message="Authentication required.",
@@ -111,6 +117,13 @@ async def complete_discord_link(
         Depends(api_dependencies.get_discord_linking_service),
     ],
 ) -> Success[DiscordLinkModel] | Failure:
+    """Finish the flow from Discord's redirect back.
+
+    ``code`` and ``state`` are optional in the signature on purpose: Discord sends
+    ``?error=`` with neither when the player declines, and a missing parameter is
+    the same class of problem as a bad one. Declaring them required would make
+    FastAPI answer 422 outside our envelope.
+    """
     # Discord sends `?code=&state=` on approval and an `?error=` (no code) when
     # the player declines. A missing code or state is the same class of problem
     # as a bad state: the flow did not complete, so answer 400 in our envelope
@@ -143,6 +156,7 @@ async def get_discord_link(
         Depends(api_dependencies.get_web_sessions_service),
     ],
 ) -> Success[DiscordLinkModel] | Failure:
+    """The caller's current Discord link, or a failure when there is none."""
     if session_token is None:
         return responses.failure(
             message="Authentication required.",
@@ -179,6 +193,7 @@ async def delete_discord_link(
         Depends(api_dependencies.get_web_sessions_service),
     ],
 ) -> Success[None] | Failure:
+    """Unlink the caller's Discord account."""
     if session_token is None:
         return responses.failure(
             message="Authentication required.",

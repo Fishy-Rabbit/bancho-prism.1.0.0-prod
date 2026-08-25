@@ -43,6 +43,7 @@ _LIMITS = OszLimits(
 
 
 def _archive(members: dict[str, bytes]) -> bytes:
+    """A zip built from the given members, for feeding to the reader."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, data in members.items():
@@ -51,10 +52,12 @@ def _archive(members: dict[str, bytes]) -> bytes:
 
 
 def _osu(version: str) -> bytes:
+    """Minimal ``.osu`` bytes carrying the given difficulty name."""
     return f"osu file format v14\n\n[Metadata]\nVersion:{version}\n".encode()
 
 
 def _members(data: bytes) -> dict[str, bytes]:
+    """Every member of a repacked archive, by name."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         return {info.filename: archive.read(info) for info in archive.infolist()}
 
@@ -63,6 +66,7 @@ def _members(data: bytes) -> dict[str, bytes]:
 
 
 def test_reads_every_difficulty_and_ignores_other_members() -> None:
+    """Every ``.osu`` is read and the audio and image members are counted but not parsed."""
     data = _archive(
         {
             "map [Easy].osu": _osu("Easy"),
@@ -83,6 +87,7 @@ def test_reads_every_difficulty_and_ignores_other_members() -> None:
 
 
 def test_a_utf8_bom_is_stripped() -> None:
+    """osu!'s own editor writes a BOM, and leaving it in would break the format header."""
     # osu!'s own editor writes a BOM; leaving it in breaks the format header.
     data = _archive({"m.osu": b"\xef\xbb\xbf" + _osu("Easy")})
 
@@ -92,11 +97,13 @@ def test_a_utf8_bom_is_stripped() -> None:
 
 
 def test_a_non_zip_upload_is_rejected() -> None:
+    """An upload that is not a zip is refused as one."""
     with pytest.raises(OszArchiveError, match="zip"):
         read_osz(b"this is not a zip file", limits=_LIMITS)
 
 
 def test_an_oversized_archive_is_rejected() -> None:
+    """An archive over the size cap is refused."""
     limits = OszLimits(
         max_archive_bytes=64,
         max_total_uncompressed_bytes=4_000_000,
@@ -114,6 +121,7 @@ def test_an_oversized_archive_is_rejected() -> None:
 
 
 def test_a_zip_bomb_is_refused_without_being_read() -> None:
+    """The declared uncompressed size is what catches a bomb, so it is never expanded to find out."""
     # highly compressible: ~1MB of zeroes shrinks to a few KB, and a real bomb
     # scales that to gigabytes. The guard reads the *declared* size instead.
     bomb = _archive({"m.osu": _osu("Easy"), "payload.bin": b"\x00" * 1_000_000})
@@ -131,6 +139,7 @@ def test_a_zip_bomb_is_refused_without_being_read() -> None:
 
 
 def test_a_single_hyper_compressed_member_is_refused() -> None:
+    """One member with an absurd ratio is refused even when the archive's totals look fine."""
     # under the total cap, but a ratio no legitimate beatmap asset reaches.
     data = _archive({"m.osu": _osu("Easy"), "payload.bin": b"\x00" * 500_000})
     limits = OszLimits(
@@ -147,6 +156,7 @@ def test_a_single_hyper_compressed_member_is_refused() -> None:
 
 
 def test_an_oversized_difficulty_is_rejected() -> None:
+    """A single ``.osu`` over its own cap is refused."""
     limits = OszLimits(
         max_archive_bytes=1_000_000,
         max_total_uncompressed_bytes=4_000_000,
@@ -175,11 +185,13 @@ def test_an_oversized_difficulty_is_rejected() -> None:
     ],
 )
 def test_traversal_shaped_names_are_rejected(name: str) -> None:
+    """A member whose name escapes the archive root is refused."""
     with pytest.raises(OszArchiveError):
         read_osz(_archive({name: _osu("Easy")}), limits=_LIMITS)
 
 
 def test_a_symlink_member_is_rejected() -> None:
+    """A symlink member, as unix zip tools write one, is refused."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w") as archive:
         info = zipfile.ZipInfo("link.osu")
@@ -192,6 +204,7 @@ def test_a_symlink_member_is_rejected() -> None:
 
 
 def test_too_many_members_is_rejected() -> None:
+    """An archive with more members than the cap is refused."""
     limits = OszLimits(
         max_archive_bytes=1_000_000,
         max_total_uncompressed_bytes=4_000_000,
@@ -210,11 +223,13 @@ def test_too_many_members_is_rejected() -> None:
 
 
 def test_an_archive_with_no_difficulty_is_rejected() -> None:
+    """An archive carrying no ``.osu`` at all is not a beatmap."""
     with pytest.raises(OszArchiveError, match="no .osu"):
         read_osz(_archive({"audio.mp3": b"\x00" * 32}), limits=_LIMITS)
 
 
 def test_too_many_difficulties_is_rejected() -> None:
+    """More difficulties than the cap is refused."""
     data = _archive({f"m [{i}].osu": _osu(str(i)) for i in range(9)})
 
     with pytest.raises(OszArchiveError, match="difficulties"):
@@ -222,6 +237,7 @@ def test_too_many_difficulties_is_rejected() -> None:
 
 
 def test_an_undecodable_difficulty_is_rejected() -> None:
+    """A ``.osu`` that is not valid UTF-8 is refused, since it could not be rewritten losslessly."""
     data = _archive({"m.osu": b"\xff\xfe\x00invalid utf-8 \x81\x82"})
 
     with pytest.raises(OszArchiveError, match="UTF-8"):
@@ -232,6 +248,7 @@ def test_an_undecodable_difficulty_is_rejected() -> None:
 
 
 def test_repack_substitutes_difficulties_and_copies_the_rest() -> None:
+    """Repacking replaces each difficulty under its new name and copies every other member byte for byte, so the audio and background it references still resolve."""
     audio = b"\x00\x01\x02audio"
     background = b"\xff\xd8background"
     data = _archive(
@@ -263,6 +280,7 @@ def test_repack_substitutes_difficulties_and_copies_the_rest() -> None:
 
 
 def test_repack_preserves_member_order() -> None:
+    """Repacking keeps the original member order."""
     data = _archive(
         {"a.mp3": b"a", "m.osu": _osu("Easy"), "z.jpg": b"z"},
     )
@@ -276,6 +294,7 @@ def test_repack_preserves_member_order() -> None:
 
 
 def test_repacked_difficulty_bytes_are_the_encoded_text() -> None:
+    """The bytes in the archive are exactly the bytes written to disk, which is what lets one md5 describe both copies."""
     # the same bytes the caller writes to .data/osu/{id}.osu, which is what lets
     # one md5 in the database describe both copies.
     text = "osu file format v14\n\n[Metadata]\nCreator:local\n"

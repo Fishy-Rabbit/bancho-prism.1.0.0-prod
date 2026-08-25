@@ -262,6 +262,12 @@ def canonical_osu_filename(
 
 
 def _parse_format_version(lines: list[str]) -> int:
+    """The ``osu file format vN`` version, read from the first non-blank line.
+
+    Raises unless the header is there and the version is one we support: a file
+    whose header we cannot read is not a beatmap, and guessing a version would
+    let everything below it read garbage as metadata.
+    """
     for line in lines:
         if not line.strip():
             continue
@@ -315,6 +321,12 @@ def _section_bounds(lines: list[str], name: str) -> tuple[int, int] | None:
 
 
 def _parse_key_values(lines: list[str]) -> dict[str, str]:
+    """The ``Key: value`` pairs of one section, as a dict.
+
+    Lines without a colon are skipped rather than rejected, since osu! has added
+    stray content to these sections across format versions and none of it is
+    ours to police.
+    """
     values: dict[str, str] = {}
     for line in lines:
         key, separator, value = line.partition(":")
@@ -324,6 +336,11 @@ def _parse_key_values(lines: list[str]) -> dict[str, str]:
 
 
 def _require_text(values: dict[str, str], key: str) -> str:
+    """A required text field, truncated to the width of the ``maps`` column it lands in.
+
+    Absent or blank raises: these are the fields song-select shows, so an empty
+    one would reach players as a nameless map.
+    """
     value = (values.get(key) or "").strip()
     if not value:
         raise OsuFileParseError(f"missing required field '{key}'")
@@ -331,6 +348,12 @@ def _require_text(values: dict[str, str], key: str) -> str:
 
 
 def _parse_mode(raw_mode: str | None) -> int:
+    """The ``Mode`` field as a gamemode int.
+
+    Absent means osu!standard, which is how pre-v4 files express it. Anything
+    outside 0..3 raises rather than clamping, because a mode we do not know is
+    one we cannot rate.
+    """
     if raw_mode is None or not raw_mode.strip():
         return 0  # absent means osu!standard
     try:
@@ -348,12 +371,18 @@ def _require_difficulty_value(
     *,
     maximum: float,
 ) -> float:
+    """A difficulty field that must be present, range-checked against ``maximum``."""
     if key not in values:
         raise OsuFileParseError(f"missing required field '{key}'")
     return _parse_difficulty_value(values[key], key, maximum=maximum)
 
 
 def _parse_difficulty_value(raw: str, key: str, *, maximum: float) -> float:
+    """One difficulty float, rejecting NaN, infinity, and anything outside 0..``maximum``.
+
+    These land in ``maps`` and feed the difficulty calculator, so a non-finite
+    value here would poison every star rating and pp figure derived from it.
+    """
     try:
         value = float(raw)
     except ValueError:

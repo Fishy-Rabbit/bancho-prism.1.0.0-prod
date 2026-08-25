@@ -39,14 +39,17 @@ class _FakeLinksRepository:
     """In-memory stand-in mirroring the repo's user_id-keyed store."""
 
     def __init__(self, *, existing: DiscordLink | None = None) -> None:
+        """Start with the given link rows."""
         self.rows: list[DiscordLink] = [existing] if existing is not None else []
         self.upserts: list[dict[str, Any]] = []
         self.deletes: list[int] = []
 
     async def fetch_by_user_id(self, user_id: int) -> DiscordLink | None:
+        """The link for an osu! account, or None."""
         return next((r for r in self.rows if r.user_id == user_id), None)
 
     async def fetch_by_discord_id(self, discord_id: str) -> DiscordLink | None:
+        """The link holding a Discord id, or None. This is the conflict lookup."""
         return next((r for r in self.rows if r.discord_id == discord_id), None)
 
     async def upsert_link(
@@ -56,6 +59,7 @@ class _FakeLinksRepository:
         discord_id: str,
         discord_username: str,
     ) -> DiscordLink:
+        """Record the write and store the resulting link."""
         self.upserts.append(
             {
                 "user_id": user_id,
@@ -74,6 +78,7 @@ class _FakeLinksRepository:
         return link
 
     async def delete(self, user_id: int) -> None:
+        """Record the unlink for an account."""
         self.deletes.append(user_id)
         self.rows = [r for r in self.rows if r.user_id != user_id]
 
@@ -82,16 +87,19 @@ class _FakeStateRepository:
     """State store recording writes and honouring single-use consume."""
 
     def __init__(self) -> None:
+        """Start with no issued state tokens."""
         self.stored: dict[str, int] = {}
         self.expiries: dict[str, int] = {}
         self.store_calls: list[tuple[str, int, int]] = []
 
     async def store(self, state: str, user_id: int, expiry_seconds: int) -> None:
+        """Record an issued state, its owner and its expiry."""
         self.stored[state] = user_id
         self.expiries[state] = expiry_seconds
         self.store_calls.append((state, user_id, expiry_seconds))
 
     async def consume(self, state: str) -> int | None:
+        """Fetch and delete a state, as the real repository does."""
         return self.stored.pop(state, None)
 
 
@@ -99,10 +107,12 @@ class _RecordingSeam:
     """A stand-in for an injected network step: returns a canned body."""
 
     def __init__(self, payload: dict[str, Any]) -> None:
+        """Record the scripted token-exchange response, or the error to raise."""
         self._payload = payload
         self.calls: list[tuple[str, dict[str, str]]] = []
 
     async def __call__(self, url: str, second: dict[str, str]) -> dict[str, Any]:
+        """Return the scripted exchange response, recording the call."""
         self.calls.append((url, second))
         return self._payload
 
@@ -111,9 +121,11 @@ class _RaisingSeam:
     """An injected network step that fails, to exercise the try/except wrap."""
 
     def __init__(self) -> None:
+        """Record the scripted identity response."""
         self.calls: list[tuple[str, dict[str, str]]] = []
 
     async def __call__(self, url: str, second: dict[str, str]) -> dict[str, Any]:
+        """Return the scripted identity, recording the call."""
         self.calls.append((url, second))
         raise RuntimeError("discord is down")
 
@@ -129,6 +141,7 @@ def _service(
     identity: Any = None,
     state_token: str = "state-xyz",
 ) -> tuple[DiscordLinkingService, _FakeLinksRepository, _FakeStateRepository]:
+    """A linking service over fakes, with credentials configured unless a test drops one."""
     links = links or _FakeLinksRepository()
     state_repo = state_repo or _FakeStateRepository()
     service = DiscordLinkingService(
@@ -148,11 +161,13 @@ def _service(
 
 
 async def test_disabled_when_a_credential_is_missing() -> None:
+    """A partly-configured integration reads as disabled, never as half-working."""
     service, _, _ = _service(client_secret="")
     assert service.enabled is False
 
 
 async def test_begin_link_returns_none_when_disabled() -> None:
+    """A disabled flow mints nothing and leaves no state behind."""
     service, _, state_repo = _service(redirect_uri="")
 
     assert await service.begin_link(6) is None
@@ -161,6 +176,7 @@ async def test_begin_link_returns_none_when_disabled() -> None:
 
 
 async def test_complete_link_is_disabled_without_touching_the_network() -> None:
+    """A disabled callback answers DISABLED without calling Discord or writing anything."""
     exchange = _RecordingSeam({"access_token": "tok"})
     service, links, _ = _service(client_id="", exchange=exchange)
 
@@ -176,6 +192,7 @@ async def test_complete_link_is_disabled_without_touching_the_network() -> None:
 
 
 async def test_begin_link_mints_binds_and_embeds_the_state() -> None:
+    """The minted state is bound to the requesting account with the flow's TTL, and it is that state the player carries to Discord."""
     service, _, state_repo = _service(state_token="the-state")
 
     url = await service.begin_link(6)
@@ -194,6 +211,7 @@ async def test_begin_link_mints_binds_and_embeds_the_state() -> None:
 
 
 async def test_complete_link_stores_the_pairing_for_the_state_owner() -> None:
+    """The link is written for the account behind the STATE, with the identity fetched from Discord."""
     exchange = _RecordingSeam({"access_token": "tok"})
     identity = _RecordingSeam({"id": "42", "username": "gamer"})
     state_repo = _FakeStateRepository()
@@ -225,6 +243,7 @@ async def test_complete_link_stores_the_pairing_for_the_state_owner() -> None:
 
 
 async def test_complete_link_allows_the_same_account_to_relink() -> None:
+    """The same account relinking the same Discord is a clean replace, not a conflict."""
     existing = DiscordLink(
         user_id=6,
         discord_id="42",
@@ -253,6 +272,7 @@ async def test_complete_link_allows_the_same_account_to_relink() -> None:
 
 
 async def test_complete_link_rejects_an_unknown_state() -> None:
+    """A forged or stale callback never reaches Discord or the database."""
     exchange = _RecordingSeam({"access_token": "tok"})
     service, links, _ = _service(exchange=exchange)  # nothing stored
 
@@ -265,6 +285,7 @@ async def test_complete_link_rejects_an_unknown_state() -> None:
 
 
 async def test_complete_link_maps_a_failed_exchange() -> None:
+    """A Discord error body carries no token, and becomes a typed EXCHANGE_FAILED."""
     state_repo = _FakeStateRepository()
     await state_repo.store("state-xyz", 6, 600)
     # a Discord error body has no access_token -> parse returns None.
@@ -280,6 +301,7 @@ async def test_complete_link_maps_a_failed_exchange() -> None:
 
 
 async def test_complete_link_maps_a_raised_exchange_to_a_clean_failure() -> None:
+    """An outage during the exchange is wrapped rather than propagated."""
     state_repo = _FakeStateRepository()
     await state_repo.store("state-xyz", 6, 600)
     service, _, _ = _service(state_repo=state_repo, exchange=_RaisingSeam())
@@ -291,6 +313,7 @@ async def test_complete_link_maps_a_raised_exchange_to_a_clean_failure() -> None
 
 
 async def test_complete_link_maps_a_failed_identity() -> None:
+    """An identity call that yields nothing usable becomes IDENTITY_FAILED, and writes nothing."""
     state_repo = _FakeStateRepository()
     await state_repo.store("state-xyz", 6, 600)
     service, links, _ = _service(
@@ -305,6 +328,7 @@ async def test_complete_link_maps_a_failed_identity() -> None:
 
 
 async def test_complete_link_refuses_a_discord_linked_elsewhere() -> None:
+    """A Discord account already backing a different osu! account cannot be stolen; the existing link is left untouched."""
     # the Discord account (id 42) already backs a *different* osu! account (7).
     existing = DiscordLink(
         user_id=7,
@@ -335,6 +359,7 @@ async def test_complete_link_refuses_a_discord_linked_elsewhere() -> None:
 
 
 async def test_fetch_link_reads_the_current_link() -> None:
+    """Reading returns the stored link, and None for an account without one."""
     existing = DiscordLink(
         user_id=6,
         discord_id="42",
@@ -348,6 +373,7 @@ async def test_fetch_link_reads_the_current_link() -> None:
 
 
 async def test_unlink_delegates_to_the_repository() -> None:
+    """Unlink is delegated straight to the repository."""
     links = _FakeLinksRepository()
     service, links, _ = _service(links=links)
 

@@ -21,6 +21,7 @@ from redis import asyncio as aioredis
 
 
 def _state_key(state: str) -> str:
+    """The Redis key one ``state`` token lives at."""
     return f"bancho:discord_oauth_state:{state}"
 
 
@@ -28,6 +29,7 @@ class DiscordOAuthStateRepository:
     """Issued OAuth ``state`` tokens, each mapped to the user who began the flow."""
 
     def __init__(self, redis: aioredis.Redis) -> None:
+        """Bind the repository to a Redis handle."""
         self._redis = redis
 
     async def store(self, state: str, user_id: int, expiry_seconds: int) -> None:

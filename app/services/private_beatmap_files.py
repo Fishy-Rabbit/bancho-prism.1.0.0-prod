@@ -46,6 +46,13 @@ class PrivateBeatmapFile:
 
 @dataclass(frozen=True)
 class PrivateBeatmapFilesService:
+    """Resolves the on-disk files behind privately-hosted beatmaps, applying the visibility rules for each kind.
+
+    An individual ``.osu`` is open (the client is asking because someone is
+    playing it); the ``.osz`` archive is not, and goes through the submission's
+    review state.
+    """
+
     maps: MapsRepository
     submissions: MapSubmissionsRepository
     beatmaps_path: Path

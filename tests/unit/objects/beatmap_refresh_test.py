@@ -45,21 +45,26 @@ class _RecordingDatabase:
     """Records every statement handed to it, so "wrote nothing" is assertable."""
 
     def __init__(self) -> None:
+        """Start with no recorded statements."""
         self.statements: list[tuple[str, Any]] = []
 
     async def execute(self, query: str, params: Any = None) -> int:
+        """Record a statement and report no rows affected."""
         self.statements.append((query, params))
         return 0
 
     async def execute_many(self, query: str, params: Any = None) -> None:
+        """Record a batch statement and its parameter rows."""
         self.statements.append((query, params))
 
     async def fetch_all(self, query: str, params: Any = None) -> list[dict[str, Any]]:
+        """Record the read and return nothing."""
         self.statements.append((query, params))
         return []
 
     @property
     def deletes(self) -> list[tuple[str, Any]]:
+        """Every recorded statement that was a delete."""
         return [
             statement
             for statement in self.statements
@@ -84,6 +89,7 @@ def _bmap(
     md5: str,
     server: str = MapServer.OSU,
 ) -> Beatmap:
+    """A beatmap with the given md5 and owning server."""
     return Beatmap(
         map_set=bmap_set,
         md5=md5,
@@ -100,6 +106,7 @@ def _bmap(
 
 
 def _set(*, id: int, server: str = MapServer.OSU) -> BeatmapSet:
+    """A beatmap set owned by the given server."""
     return BeatmapSet(id=id, last_osuapi_check=_LAST_CHECK, server=server)
 
 
@@ -107,6 +114,7 @@ def _set(*, id: int, server: str = MapServer.OSU) -> BeatmapSet:
 def recording_database(
     monkeypatch: pytest.MonkeyPatch,
 ) -> _RecordingDatabase:
+    """A fake database that records every statement so deletes can be asserted against."""
     database = _RecordingDatabase()
     monkeypatch.setattr(app.state.services, "database", database)
     return database
@@ -136,6 +144,7 @@ async def test_private_set_is_never_refreshed_when_api_404s(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """A privately-hosted set does not even ask the osu!api: it has no upstream to refresh from."""
     bmap_set = _set(id=2_000_000_000, server=MapServer.PRIVATE)
     bmap_set.maps = [
         _bmap(bmap_set, id=2_000_000_001, md5="a" * 32, server=MapServer.PRIVATE),
@@ -154,6 +163,7 @@ async def test_private_set_survives_an_empty_200(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """An empty 200 from the api cannot be read as 'deleted upstream' for a private set."""
     # a 200 with no beatmaps is what the real osu!api returns for an id it has
     # never heard of, so this is the branch that fired for every private set.
     bmap_set = _set(id=2_000_000_000, server=MapServer.PRIVATE)
@@ -175,6 +185,7 @@ async def test_osu_set_missing_upstream_still_deletes(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """A genuine osu! set that vanished upstream is still cleaned up, every delete scoped to osu!-hosted rows."""
     bmap_set = _set(id=42)
     bmap_set.maps = [_bmap(bmap_set, id=101, md5="b" * 32)]
     _patch_api(monkeypatch, data=None, status_code=404)
@@ -196,6 +207,7 @@ async def test_osu_set_drops_only_maps_the_api_no_longer_lists(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """Refreshing an osu! set removes only the maps the api stopped listing."""
     bmap_set = _set(id=42)
     kept = _bmap(bmap_set, id=101, md5="c" * 32)
     removed = _bmap(bmap_set, id=102, md5="d" * 32)
@@ -236,6 +248,7 @@ async def test_a_private_map_inside_an_osu_set_is_not_deleted(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """A privately-hosted map inside an osu! set survives the refresh, and so do its scores."""
     # the api cannot vouch for a privately-hosted map either way, so an osu! set
     # refresh must leave it (and its scores) alone rather than treating its
     # absence from the response as "deleted upstream".
@@ -257,6 +270,7 @@ async def test_a_private_map_inside_an_osu_set_is_not_deleted(
 async def test_save_to_sql_writes_each_map_s_own_server(
     recording_database: _RecordingDatabase,
 ) -> None:
+    """Each map is written with its own owning server, not the set's."""
     bmap_set = _set(id=42)
     bmap_set.maps = [
         _bmap(bmap_set, id=101, md5="1" * 32),
@@ -273,6 +287,7 @@ async def test_new_maps_from_the_api_are_marked_osu_hosted(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """Maps built from an api response are osu!-hosted, including on the ``__new__`` path that bypasses ``__init__``."""
     # `Beatmap.__new__` bypasses `__init__`, so a missed attribute here is an
     # AttributeError on the *normal* osu! path, not the private one.
     bmap_set = _set(id=42)
@@ -312,6 +327,7 @@ async def test_the_mapset_write_carries_the_set_s_server(
     monkeypatch: pytest.MonkeyPatch,
     recording_database: _RecordingDatabase,
 ) -> None:
+    """The set row is written with its owning server."""
     bmap_set = _set(id=42)
     _patch_api(monkeypatch, data=[], status_code=200)
 

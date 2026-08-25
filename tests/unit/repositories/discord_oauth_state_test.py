@@ -29,24 +29,29 @@ class _FakeRedis:
     """
 
     def __init__(self) -> None:
+        """Start with an empty key space."""
         self.values: dict[str, bytes] = {}
         self.expiries: dict[str, int] = {}
 
     async def set(self, key: str, value: str, ex: int | None = None) -> None:
+        """Record a value and its expiry."""
         self.values[key] = value.encode()
         if ex is not None:
             self.expiries[key] = ex
 
     async def getdel(self, key: str) -> bytes | None:
+        """Fetch and delete in one step, as the real client does."""
         return self.values.pop(key, None)
 
 
 def _repo() -> tuple[DiscordOAuthStateRepository, _FakeRedis]:
+    """A repository over an in-memory fake Redis."""
     redis = _FakeRedis()
     return DiscordOAuthStateRepository(redis), redis  # type: ignore[arg-type]
 
 
 async def test_store_then_consume_round_trips_the_user_id() -> None:
+    """A stored state hands back the user id that began the flow."""
     repo, _ = _repo()
 
     await repo.store("state-abc", user_id=7, expiry_seconds=600)
@@ -55,6 +60,7 @@ async def test_store_then_consume_round_trips_the_user_id() -> None:
 
 
 async def test_store_sets_a_ttl() -> None:
+    """The write carries an expiry, so an abandoned flow does not linger."""
     repo, redis = _repo()
 
     await repo.store("state-abc", user_id=7, expiry_seconds=600)
@@ -64,6 +70,7 @@ async def test_store_sets_a_ttl() -> None:
 
 
 async def test_consume_is_single_use() -> None:
+    """Consuming deletes, so a replayed callback finds nothing the second time."""
     repo, _ = _repo()
     await repo.store("state-abc", user_id=7, expiry_seconds=600)
 
@@ -73,12 +80,14 @@ async def test_consume_is_single_use() -> None:
 
 
 async def test_consume_of_an_unknown_state_returns_none() -> None:
+    """A state we never issued reads as None."""
     repo, _ = _repo()
 
     assert await repo.consume("never-stored") is None
 
 
 async def test_keys_are_namespaced_per_state() -> None:
+    """Distinct states never collide, and the namespace keeps them out of other bancho keyspaces."""
     repo, redis = _repo()
 
     await repo.store("one", user_id=1, expiry_seconds=60)

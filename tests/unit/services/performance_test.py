@@ -23,6 +23,7 @@ from app.services.performance import PerformanceService
 
 
 def _osu_file(*, hit_objects: str, mode: int = 0, circle_size: str = "4") -> str:
+    """A minimal valid ``.osu`` file carrying the given hit objects, mode and circle size."""
     return "\n".join(
         [
             "osu file format v14",
@@ -55,6 +56,7 @@ def _osu_file(*, hit_objects: str, mode: int = 0, circle_size: str = "4") -> str
 
 
 def test_rates_a_standard_beatmap_from_content() -> None:
+    """Four circles rate to a real star value and a max combo of one per object."""
     # four circles: max combo is one per object, and the map has a real rating.
     content = _osu_file(
         hit_objects="\n".join(
@@ -77,6 +79,7 @@ def test_rates_a_standard_beatmap_from_content() -> None:
 
 
 def test_rates_a_mania_beatmap() -> None:
+    """A mania difficulty rates through the same call under its own mode."""
     content = _osu_file(
         mode=3,
         circle_size="4",
@@ -99,6 +102,7 @@ def test_rates_a_mania_beatmap() -> None:
 
 
 def test_unparseable_content_raises_our_own_error() -> None:
+    """Text that is not a beatmap raises ``BeatmapDifficultyError``, never the calculator's own exception."""
     # the calculator's own exception must not escape to the caller as a 500.
     with pytest.raises(BeatmapDifficultyError):
         PerformanceService().calculate_beatmap_difficulty(
@@ -108,6 +112,7 @@ def test_unparseable_content_raises_our_own_error() -> None:
 
 
 def test_empty_content_raises_our_own_error() -> None:
+    """Empty content is a rating failure rather than a crash."""
     with pytest.raises(BeatmapDifficultyError):
         PerformanceService().calculate_beatmap_difficulty(
             osu_file_content="",
@@ -116,6 +121,7 @@ def test_empty_content_raises_our_own_error() -> None:
 
 
 def test_the_rating_is_storable_in_the_maps_column() -> None:
+    """The rating fits ``maps.diff``: at most 999.999, and no more than three decimals."""
     # `maps.diff` is float(6,3); a value past 999.999 could not be written.
     content = _osu_file(hit_objects="256,192,0,1,0\n256,192,600,1,0")
 

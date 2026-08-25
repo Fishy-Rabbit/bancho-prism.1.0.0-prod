@@ -2320,6 +2320,7 @@ def test_apply_weighted_performance_stats_calculates_accuracy_and_pp() -> None:
 
 
 async def test_status_calculation_survives_an_unavailable_osu_file() -> None:
+    """A passed score whose ``.osu`` cannot be fetched is recorded at 0pp as SUBMITTED, never BEST."""
     score = _score()
     del score.pp  # prove nothing is inherited from the fixture
     del score.status
@@ -2340,6 +2341,7 @@ async def test_status_calculation_survives_an_unavailable_osu_file() -> None:
 
 
 async def test_failed_score_with_an_unavailable_osu_file_is_marked_failed() -> None:
+    """A failed score with no ``.osu`` is marked FAILED and keeps its fail time."""
     score = _score()
     del score.pp
     del score.status
@@ -2360,6 +2362,7 @@ async def test_failed_score_with_an_unavailable_osu_file_is_marked_failed() -> N
 async def test_status_calculation_still_rates_an_available_osu_file(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """The 0pp defaults do not shadow a real calculation when the file IS available."""
     # regression pin: the defaults must not shadow a real calculation.
     score = _score()
     score.passed = True

@@ -88,6 +88,8 @@ _MAX_STORABLE_STARS = 999.999
 
 
 class PerformanceService:
+    """Rates scores and beatmaps through the pp calculator, clamping to what ``maps.diff`` can hold."""
+
     def calculate_performances(
         self,
         osu_file_path: str,

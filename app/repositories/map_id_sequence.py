@@ -66,6 +66,8 @@ class MapIdKind(StrEnum):
 
 
 class MapIdSequenceTable(Base):
+    """The allocation ledger. One row per id handed out, and the row's own ``auto_increment`` IS the id."""
+
     __tablename__ = "map_id_sequence"
 
     id = Column(Integer, nullable=False, primary_key=True, autoincrement=True)
@@ -75,7 +77,10 @@ class MapIdSequenceTable(Base):
 
 
 class MapIdSequenceRepository:
+    """Hands out beatmap and set ids for privately-hosted content, never below the private floor."""
+
     def __init__(self, database: Database) -> None:
+        """Bind the repository to a database handle."""
         self._database = database
 
     async def allocate(self, *, kind: MapIdKind, allocated_by: int) -> int:

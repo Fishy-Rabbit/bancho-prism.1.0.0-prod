@@ -26,6 +26,7 @@ from app.adapters.discord_oauth import parse_identity
 
 
 def test_authorize_url_targets_discord_and_carries_the_flow_fields() -> None:
+    """The authorize URL points at Discord and carries client id, redirect, response type, state, and the least-privilege ``identify`` scope."""
     url = build_authorize_url(
         client_id="my-client",
         redirect_uri="https://osu.example/v2/oauth/discord/callback",
@@ -45,6 +46,7 @@ def test_authorize_url_targets_discord_and_carries_the_flow_fields() -> None:
 
 
 def test_authorize_url_percent_encodes_the_redirect() -> None:
+    """A redirect carrying its own query survives percent-encoded, so no client parses a truncated ``redirect_uri``."""
     url = build_authorize_url(
         client_id="c",
         redirect_uri="https://osu.example/cb?x=1",
@@ -58,6 +60,7 @@ def test_authorize_url_percent_encodes_the_redirect() -> None:
 
 
 def test_token_exchange_body_is_the_authorization_code_grant() -> None:
+    """The exchange body is exactly the authorization-code grant Discord expects."""
     data = build_token_exchange_data(
         client_id="cid",
         client_secret="secret",
@@ -75,14 +78,17 @@ def test_token_exchange_body_is_the_authorization_code_grant() -> None:
 
 
 def test_identity_headers_are_bearer_auth() -> None:
+    """The identity call authenticates as bearer with the issued token."""
     assert build_identity_headers("abc123") == {"Authorization": "Bearer abc123"}
 
 
 def test_parse_access_token_returns_the_token() -> None:
+    """A well-formed token response yields the access token."""
     assert parse_access_token({"access_token": "tok", "token_type": "Bearer"}) == "tok"
 
 
 def test_parse_access_token_rejects_missing_or_empty_or_wrong_type() -> None:
+    """An error body, an empty token, a null, and a non-string all parse to None rather than to a truthy value."""
     # a Discord error body has no access_token at all.
     assert parse_access_token({"error": "invalid_grant"}) is None
     assert parse_access_token({"access_token": ""}) is None
@@ -91,11 +97,13 @@ def test_parse_access_token_rejects_missing_or_empty_or_wrong_type() -> None:
 
 
 def test_parse_identity_reads_id_and_username() -> None:
+    """A well-formed identity response yields the id and username."""
     identity = parse_identity({"id": "123", "username": "coolguy"})
     assert identity == DiscordIdentity(id="123", username="coolguy")
 
 
 def test_parse_identity_coerces_a_numeric_snowflake_to_string() -> None:
+    """A snowflake sent as a JSON number is stored as a string, since that is the column's type."""
     # Discord may render the snowflake as a JSON number; we store it as a string.
     identity = parse_identity({"id": 123456789012345678, "username": "n"})
     assert identity is not None
@@ -104,6 +112,7 @@ def test_parse_identity_coerces_a_numeric_snowflake_to_string() -> None:
 
 
 def test_parse_identity_rejects_missing_id_or_username() -> None:
+    """A missing id, a missing username, an empty username, a non-string username, and an error body all parse to None."""
     assert parse_identity({"username": "no-id"}) is None
     assert parse_identity({"id": "123"}) is None
     assert parse_identity({"id": "123", "username": ""}) is None

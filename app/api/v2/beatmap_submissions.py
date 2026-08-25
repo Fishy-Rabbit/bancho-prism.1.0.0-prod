@@ -119,6 +119,11 @@ def _require_actor(actor: User | None) -> Failure | None:
 
 
 def _feature_disabled() -> Failure:
+    """The answer when submissions are switched off: a 404, not a 503.
+
+    A server that has not enabled submissions does not HAVE this endpoint, and
+    saying so invites no further attempts.
+    """
     # 404 rather than 503: a server that has not enabled submissions does not have
     # this endpoint, and saying so invites no further attempts.
     return responses.failure(
@@ -145,6 +150,7 @@ def _failure(result: BeatmapSubmissionResult) -> Failure:
 def _difficulty_model(
     difficulty: SubmittedDifficulty,
 ) -> BeatmapSubmissionDifficultyModel:
+    """Project one submitted difficulty into its API model."""
     return BeatmapSubmissionDifficultyModel(
         id=difficulty.beatmap_id,
         md5=difficulty.md5,
@@ -164,6 +170,7 @@ def _difficulty_model(
 
 
 def _submission_model(result: BeatmapSubmissionResult) -> BeatmapSubmissionModel:
+    """Project a successful service result into its API model, difficulties included."""
     assert result.submission is not None  # every success carries its submission.
     model = BeatmapSubmissionModel.model_validate(result.submission)
     model.difficulties = [
@@ -182,6 +189,11 @@ async def submit_beatmap(
         Depends(api_dependencies.get_beatmap_submission_service),
     ],
 ) -> Success[BeatmapSubmissionModel] | Failure:
+    """Upload an ``.osz`` and host it here.
+
+    The multipart file is the whole request body; everything else about the set
+    is read out of the archive rather than trusted from the client.
+    """
     if not app.settings.BEATMAP_SUBMISSION_ENABLED:
         return _feature_disabled()
 
@@ -217,6 +229,12 @@ async def get_beatmap_submissions(
         Depends(api_dependencies.get_beatmap_submission_service),
     ],
 ) -> Success[list[BeatmapSubmissionModel]] | Failure:
+    """List submissions the caller may see, newest first.
+
+    ``mine`` is the convenience for the common case and deliberately wins over an
+    explicit ``submitter_user_id``, so a client cannot ask for both and get a
+    surprising answer.
+    """
     if not app.settings.BEATMAP_SUBMISSION_ENABLED:
         return _feature_disabled()
 
@@ -258,6 +276,7 @@ async def get_beatmap_submission(
         Depends(api_dependencies.get_beatmap_submission_service),
     ],
 ) -> Success[BeatmapSubmissionModel] | Failure:
+    """One submission by set id, subject to the same visibility rules as the listing."""
     if not app.settings.BEATMAP_SUBMISSION_ENABLED:
         return _feature_disabled()
 
@@ -286,6 +305,11 @@ async def update_beatmap_submission(
         Depends(api_dependencies.get_beatmap_submission_service),
     ],
 ) -> Success[BeatmapSubmissionModel] | Failure:
+    """Change a submission's ranked status or review state.
+
+    The service decides what the caller may set: a submitter can never give their
+    own map a pp-awarding status.
+    """
     if not app.settings.BEATMAP_SUBMISSION_ENABLED:
         return _feature_disabled()
 
@@ -317,6 +341,7 @@ async def delete_beatmap_submission(
         Depends(api_dependencies.get_beatmap_submission_service),
     ],
 ) -> Success[None] | Failure:
+    """Withdraw a submission and remove the beatmaps it created."""
     if not app.settings.BEATMAP_SUBMISSION_ENABLED:
         return _feature_disabled()
 

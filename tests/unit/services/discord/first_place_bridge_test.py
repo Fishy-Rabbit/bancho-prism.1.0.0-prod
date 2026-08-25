@@ -38,10 +38,12 @@ class _FakePoster:
     """Records the embeds it's handed; can be told to raise to prove isolation."""
 
     def __init__(self, *, raise_on_post: bool = False) -> None:
+        """Record whether this poster should blow up when called."""
         self.embeds: list[Embed] = []
         self._raise = raise_on_post
 
     async def __call__(self, embed: Embed) -> None:
+        """Collect the embed, or raise if this poster is the failing one."""
         self.embeds.append(embed)
         if self._raise:
             raise RuntimeError("discord returned 500")
@@ -55,6 +57,7 @@ def _score(
     restricted: bool = False,
     mods: Mods = Mods.NOMOD,
 ) -> Any:
+    """A score shaped like the bridge reads one, with a ranked map and an unrestricted player."""
     return SimpleNamespace(
         mode=GameMode.VANILLA_OSU,
         status=status,
@@ -85,6 +88,7 @@ def _score(
 
 
 def test_embed_renders_the_score_and_map() -> None:
+    """The embed titles, links and describes the map and the player who took it."""
     embed = first_place_bridge.build_first_place_embed(
         _score(),
         previous_first_place_score=None,
@@ -103,6 +107,7 @@ def test_embed_renders_the_score_and_map() -> None:
 
 
 def test_embed_attributes_the_player_and_cover() -> None:
+    """The embed carries the player as its author and the map's cover as its thumbnail."""
     embed = first_place_bridge.build_first_place_embed(
         _score(),
         previous_first_place_score=None,
@@ -118,6 +123,7 @@ def test_embed_attributes_the_player_and_cover() -> None:
 
 
 def test_embed_shows_mods_when_present() -> None:
+    """Mods appear in the description when the score has any."""
     mods = Mods.HIDDEN | Mods.HARDROCK
     embed = first_place_bridge.build_first_place_embed(
         _score(mods=mods),
@@ -129,6 +135,7 @@ def test_embed_shows_mods_when_present() -> None:
 
 
 def test_embed_omits_mods_when_nomod() -> None:
+    """A nomod score renders no mod string at all."""
     embed = first_place_bridge.build_first_place_embed(
         _score(mods=Mods.NOMOD),
         previous_first_place_score=None,
@@ -139,6 +146,7 @@ def test_embed_omits_mods_when_nomod() -> None:
 
 
 def test_embed_names_a_different_previous_holder() -> None:
+    """A displaced #1 is named and linked."""
     embed = first_place_bridge.build_first_place_embed(
         _score(),
         previous_first_place_score=FirstPlaceScore(id=9, name="vaxei"),
@@ -151,6 +159,7 @@ def test_embed_names_a_different_previous_holder() -> None:
 
 
 def test_embed_skips_a_self_replacing_previous_holder() -> None:
+    """A player beating their own top score is not announced as displacing a previous #1."""
     # the same player beating their own top score is not a "previous #1" worth
     # naming -- it's just them again.
     embed = first_place_bridge.build_first_place_embed(
@@ -166,6 +175,7 @@ def test_embed_skips_a_self_replacing_previous_holder() -> None:
 
 
 async def test_a_real_first_place_posts_one_embed() -> None:
+    """A genuine #1 posts exactly one embed."""
     poster = _FakePoster()
 
     await first_place_bridge.announce_first_place_to_discord(
@@ -179,6 +189,7 @@ async def test_a_real_first_place_posts_one_embed() -> None:
 
 
 async def test_a_non_first_place_score_posts_nothing() -> None:
+    """A score that did not take the top of the board posts nothing."""
     poster = _FakePoster()
 
     await first_place_bridge.announce_first_place_to_discord(
@@ -191,6 +202,7 @@ async def test_a_non_first_place_score_posts_nothing() -> None:
 
 
 async def test_a_first_place_on_an_unranked_map_posts_nothing() -> None:
+    """A #1 on an unranked map posts nothing."""
     poster = _FakePoster()
 
     await first_place_bridge.announce_first_place_to_discord(
@@ -203,6 +215,7 @@ async def test_a_first_place_on_an_unranked_map_posts_nothing() -> None:
 
 
 async def test_a_non_best_status_posts_nothing() -> None:
+    """A score that is not the player's best posts nothing."""
     poster = _FakePoster()
 
     await first_place_bridge.announce_first_place_to_discord(
@@ -215,6 +228,7 @@ async def test_a_non_best_status_posts_nothing() -> None:
 
 
 async def test_a_restricted_player_posts_nothing() -> None:
+    """A restricted player's #1 never leaks to Discord."""
     poster = _FakePoster()
 
     await first_place_bridge.announce_first_place_to_discord(
@@ -227,6 +241,7 @@ async def test_a_restricted_player_posts_nothing() -> None:
 
 
 async def test_a_failing_post_never_propagates() -> None:
+    """A webhook that raises is swallowed and logged, and the attempt still happened."""
     # the webhook blows up; the committed score must not care.
     poster = _FakePoster(raise_on_post=True)
 
@@ -242,6 +257,7 @@ async def test_a_failing_post_never_propagates() -> None:
 
 
 def test_first_place_webhook_defaults_to_disabled() -> None:
+    """The feed is opt-in: with no webhook configured the setting is empty and nothing posts."""
     # the feed is opt-in: absent config leaves the setting empty, and the DI
     # wiring treats empty as "don't post".
     assert app.settings.DISCORD_FIRST_PLACE_WEBHOOK == ""

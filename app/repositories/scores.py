@@ -282,6 +282,8 @@ class ReplayHeader:
 
 
 class ScoresRepository:
+    """Data access for ``scores``, including the visibility rules leaderboards read through."""
+
     def __init__(self, database: Database) -> None:
         self._database = database
 

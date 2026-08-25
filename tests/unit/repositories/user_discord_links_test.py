@@ -55,14 +55,17 @@ class _FakeDatabase:
     """
 
     def __init__(self) -> None:
+        """Start with the given rows."""
         self.rows: list[dict[str, Any]] = []
 
     async def execute(self, statement: Any) -> int:
+        """Dispatch a statement to the fake's upsert or delete."""
         if isinstance(statement, Delete):
             return self._delete(statement)
         return self._upsert(statement)
 
     def _upsert(self, statement: Any) -> int:
+        """Insert or replace a row, filling the columns the real database would default."""
         params = statement.compile().params
         values = {k: v for k, v in params.items() if k in _COLUMN_NAMES}
         # `linked_at` is func.now() in the statement, so the DB fills it; the fake
@@ -78,12 +81,14 @@ class _FakeDatabase:
         return 1
 
     def _delete(self, statement: Any) -> int:
+        """Remove matching rows and report how many went."""
         predicates = _where_predicates(statement.whereclause)
         before = len(self.rows)
         self.rows = [row for row in self.rows if not all(p(row) for p in predicates)]
         return before - len(self.rows)
 
     async def fetch_one(self, statement: Any) -> dict[str, Any] | None:
+        """The first row matching the statement's predicates, or None."""
         predicates = _where_predicates(statement.whereclause)
         for row in self.rows:
             if all(p(row) for p in predicates):
@@ -92,6 +97,7 @@ class _FakeDatabase:
 
 
 def _where_predicates(whereclause: Any) -> list[Any]:
+    """Turn a statement's WHERE clauses into row predicates the fake can apply."""
     if whereclause is None:
         return []
     clauses = getattr(whereclause, "clauses", None) or [whereclause]
@@ -99,15 +105,18 @@ def _where_predicates(whereclause: Any) -> list[Any]:
 
 
 def _eq(column_name: str, value: Any) -> Any:
+    """An equality predicate over one column."""
     return lambda row: row[column_name] == value
 
 
 def _repo() -> tuple[DiscordLinksRepository, _FakeDatabase]:
+    """A repository over an in-memory fake database."""
     database = _FakeDatabase()
     return DiscordLinksRepository(database), database  # type: ignore[arg-type]
 
 
 async def test_upsert_inserts_and_round_trips_the_link() -> None:
+    """A new link is written and reads back identically."""
     repository, _ = _repo()
 
     link = await repository.upsert_link(
@@ -126,6 +135,7 @@ async def test_upsert_inserts_and_round_trips_the_link() -> None:
 
 
 async def test_relinking_the_same_account_replaces_in_place() -> None:
+    """Linking a different Discord to the same osu! account replaces the row rather than adding a second."""
     repository, database = _repo()
     await repository.upsert_link(
         user_id=6,
@@ -147,6 +157,7 @@ async def test_relinking_the_same_account_replaces_in_place() -> None:
 
 
 async def test_upsert_truncates_the_username_to_the_column_cap() -> None:
+    """A username longer than the column is capped before the write, never overflowed into it."""
     repository, _ = _repo()
 
     # Discord's usernames are documented at <=32; a longer value must be capped
@@ -162,6 +173,7 @@ async def test_upsert_truncates_the_username_to_the_column_cap() -> None:
 
 
 async def test_fetch_by_discord_id_is_the_conflict_lookup() -> None:
+    """A Discord id resolves back to the osu! account holding it, which is how a conflict is detected."""
     repository, _ = _repo()
     await repository.upsert_link(
         user_id=6,
@@ -176,6 +188,7 @@ async def test_fetch_by_discord_id_is_the_conflict_lookup() -> None:
 
 
 async def test_reads_return_none_when_absent() -> None:
+    """Both lookups answer None rather than raising when there is no link."""
     repository, _ = _repo()
 
     assert await repository.fetch_by_user_id(404) is None
@@ -183,6 +196,7 @@ async def test_reads_return_none_when_absent() -> None:
 
 
 async def test_delete_removes_the_link() -> None:
+    """Unlinking removes the row."""
     repository, _ = _repo()
     await repository.upsert_link(
         user_id=6,
@@ -196,6 +210,7 @@ async def test_delete_removes_the_link() -> None:
 
 
 async def test_delete_of_an_unlinked_account_is_a_no_op() -> None:
+    """Unlinking is idempotent: removing a link that was never there does not raise."""
     repository, _ = _repo()
 
     # unlinking is idempotent: removing a link that was never there does not raise.

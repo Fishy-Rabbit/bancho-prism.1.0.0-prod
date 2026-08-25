@@ -137,6 +137,8 @@ class SubmittedDifficulty:
 
 @dataclass(frozen=True)
 class BeatmapSubmissionResult:
+    """The outcome of one submission attempt: a code, plus what was created or why it was refused."""
+
     code: BeatmapSubmissionResultCode
     submission: MapSubmission | None = None
     difficulties: tuple[SubmittedDifficulty, ...] = ()
@@ -145,35 +147,53 @@ class BeatmapSubmissionResult:
 
 @dataclass(frozen=True)
 class BeatmapSubmissionListing:
+    """One page of submissions with the unpaged total beside it."""
+
     submissions: list[MapSubmission]
     total: int
 
 
 class AtomicFileWriter(Protocol):
-    def __call__(self, path: Path, data: bytes) -> Awaitable[None]: ...
+    """Writes bytes to a path such that a reader never sees a partial file."""
+
+    def __call__(self, path: Path, data: bytes) -> Awaitable[None]:
+        """Write ``data`` to ``path``."""
+        ...
 
 
 class FileRemover(Protocol):
-    def __call__(self, path: Path) -> None: ...
+    """Deletes a path, used to unwind files when a submission fails after writing."""
+
+    def __call__(self, path: Path) -> None:
+        """Remove ``path``."""
+        ...
 
 
 class DifficultyCalculator(Protocol):
+    """Rates one difficulty from its ``.osu`` text."""
+
     def __call__(
         self,
         *,
         osu_file_content: str,
         mode: int,
-    ) -> BeatmapDifficultyAttributes: ...
+    ) -> BeatmapDifficultyAttributes:
+        """Star rating and max combo for ``osu_file_content`` in ``mode``."""
+        ...
 
 
 class BeatmapCacheEvictor(Protocol):
+    """Drops cached beatmap objects so the next lookup reads the rows just written."""
+
     def __call__(
         self,
         *,
         set_id: int,
         map_ids: Sequence[int],
         map_md5s: Sequence[str],
-    ) -> None: ...
+    ) -> None:
+        """Evict the set, its maps, and their md5 keys."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -192,6 +212,12 @@ class _PreparedDifficulty:
 
 @dataclass(frozen=True)
 class BeatmapSubmissionService:
+    """The upload-to-hosted-beatmap transaction, and the moderation rules around it.
+
+    Every side effect is a field, so the whole flow exercises with no filesystem,
+    no database and no difficulty calculator.
+    """
+
     maps: MapsRepository
     mapsets: MapsetsRepository
     submissions: MapSubmissionsRepository
@@ -343,6 +369,10 @@ class BeatmapSubmissionService:
         )
 
     def _check_eligibility(self, submitter: User) -> BeatmapSubmissionResult | None:
+        """Refuse a submitter who is restricted, unverified, or currently silenced.
+
+        Returns the refusal, or None when the account may submit.
+        """
         required = Privileges.UNRESTRICTED.value | Privileges.VERIFIED.value
         if submitter.priv & required != required:
             return BeatmapSubmissionResult(
@@ -365,6 +395,11 @@ class BeatmapSubmissionService:
         metadata: OsuFileMetadata,
         creator: str,
     ) -> _PreparedDifficulty:
+        """Validate one difficulty and stamp our identity into it, writing nothing.
+
+        The result holds the rewritten text, its md5 and its rated attributes, so the
+        commit step below has no work left that can fail.
+        """
         # our ids and our creator, not whatever the upload claimed.
         text = rewrite_osu_file_identity(
             member.text,
@@ -432,6 +467,12 @@ class BeatmapSubmissionService:
         archive: bytes,
         parsed: Sequence[tuple[OszOsuMember, OsuFileMetadata]],
     ) -> MapSubmission:
+        """Write the files, then the rows, in one transaction.
+
+        Order is deliberate and explained in the module docstring: a ``maps`` row
+        without its ``.osu`` breaks score submission for everyone who plays the map,
+        while an ``.osu`` without a row is merely an unreferenced file.
+        """
         submitted_at = self.now()
 
         async with self.database.transaction():
@@ -718,14 +759,17 @@ class BeatmapSubmissionService:
 
 
 def _is_staff(actor: User) -> bool:
+    """Whether the actor holds the STAFF bit."""
     return actor.priv & Privileges.STAFF.value != 0
 
 
 def _is_nominator(actor: User) -> bool:
+    """Whether the actor holds the NOMINATOR bit."""
     return actor.priv & Privileges.NOMINATOR.value != 0
 
 
 def _may_view(actor: User | None, submission: MapSubmission) -> bool:
+    """Who may see a submission: anyone once approved, otherwise staff, nominators, and its own submitter."""
     if submission.review_state == MapSubmissionReviewState.APPROVED.value:
         return True
     if actor is None:
@@ -774,6 +818,11 @@ def _check_status_permitted(
 def _check_cross_difficulty_consistency(
     parsed: Sequence[tuple[OszOsuMember, OsuFileMetadata]],
 ) -> BeatmapSubmissionResult | None:
+    """Refuse a set whose difficulties disagree with each other.
+
+    Duplicate difficulty names, or more than one artist/title pair, since osu!
+    keys a set on artist and title and differing values render as unrelated maps.
+    """
     versions = [metadata.version for _, metadata in parsed]
     if len(set(versions)) != len(versions):
         return BeatmapSubmissionResult(
@@ -796,6 +845,7 @@ def _check_cross_difficulty_consistency(
 def _as_submitted_difficulty(
     difficulty: _PreparedDifficulty,
 ) -> SubmittedDifficulty:
+    """Project a prepared difficulty into the shape the API returns."""
     metadata = difficulty.metadata
     return SubmittedDifficulty(
         beatmap_id=difficulty.beatmap_id,
@@ -816,6 +866,7 @@ def _as_submitted_difficulty(
 
 
 def _map_to_difficulty(row: Map) -> SubmittedDifficulty:
+    """Project an existing ``maps`` row into the same shape, for reads of past submissions."""
     return SubmittedDifficulty(
         beatmap_id=row.id,
         md5=row.md5,

@@ -37,6 +37,8 @@ from app.repositories.maps import MapServer
 
 
 class MapsetsTable(Base):
+    """The ``mapsets`` table: one row per set, carrying its last osu!api refresh time."""
+
     __tablename__ = "mapsets"
 
     # (server, id) is the primary key: the same numeric id may in principle exist
@@ -64,16 +66,22 @@ READ_PARAMS = (
 
 @dataclass(frozen=True, slots=True)
 class Mapset:
+    """A set row as the rest of the codebase sees it."""
+
     id: int
     server: str
     last_osuapi_check: datetime
 
 
 class MapsetsRepository:
+    """Data access for ``mapsets``, the table that previously had no owner."""
+
     def __init__(self, database: Database) -> None:
+        """Bind the repository to a database handle."""
         self._database = database
 
     def _deserialize(self, row: MySQLRow) -> Mapset:
+        """Turn one database row into a :class:`Mapset`."""
         return Mapset(
             id=row["id"],
             server=str(row["server"]),

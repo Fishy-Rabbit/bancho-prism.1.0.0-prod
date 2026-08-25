@@ -77,6 +77,7 @@ def _user(
     priv: int = Privileges.UNRESTRICTED.value | Privileges.VERIFIED.value,
     silence_end: int = 0,
 ) -> User:
+    """A submitter shaped like the service reads one: unrestricted, verified, unsilenced."""
     return User(
         id=user_id,
         name=name,
@@ -100,6 +101,7 @@ def _user(
 
 
 def _staff() -> User:
+    """A user carrying the STAFF bit."""
     return _user(
         user_id=1,
         name="mod",
@@ -112,6 +114,7 @@ def _staff() -> User:
 
 
 def _nominator() -> User:
+    """A user carrying the NOMINATOR bit."""
     return _user(
         user_id=2,
         name="nom",
@@ -132,6 +135,7 @@ def _osu_text(
     set_id: int = 99999,
     creator: str = "someone-else",
 ) -> str:
+    """A minimal valid ``.osu`` file, carrying whatever identity the test wants to see replaced."""
     return "\n".join(
         [
             "osu file format v14",
@@ -165,6 +169,7 @@ def _osu_text(
 
 
 def _archive(members: dict[str, bytes]) -> bytes:
+    """A zip built from the given members."""
     buffer = io.BytesIO()
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for name, data in members.items():
@@ -173,6 +178,7 @@ def _archive(members: dict[str, bytes]) -> bytes:
 
 
 def _one_difficulty_osz() -> bytes:
+    """An archive holding a single difficulty and its audio."""
     return _archive(
         {
             "song [Easy].osu": _osu_text(version="Easy").encode(),
@@ -182,6 +188,7 @@ def _one_difficulty_osz() -> bytes:
 
 
 def _two_difficulty_osz() -> bytes:
+    """An archive holding two difficulties of the same song."""
     return _archive(
         {
             "song [Easy].osu": _osu_text(version="Easy").encode(),
@@ -195,7 +202,10 @@ def _two_difficulty_osz() -> bytes:
 
 
 class _FakeMapsRepository:
+    """A maps repository over an in-memory row list."""
+
     def __init__(self, *, existing: list[Map] | None = None) -> None:
+        """Start with the given map rows."""
         self.rows: list[Map] = list(existing or [])
         self.deleted_set_ids: list[tuple[int, str]] = []
 
@@ -205,6 +215,7 @@ class _FakeMapsRepository:
         md5: str | None = None,
         filename: str | None = None,
     ) -> Map | None:
+        """The first row matching the given filter, or None."""
         for row in self.rows:
             if id is not None and row.id == id:
                 return row
@@ -220,6 +231,7 @@ class _FakeMapsRepository:
         set_id: int | None = None,
         **_: Any,
     ) -> list[Map]:
+        """Every row matching the given filter."""
         return [
             row
             for row in self.rows
@@ -228,11 +240,13 @@ class _FakeMapsRepository:
         ]
 
     async def create(self, **values: Any) -> Map:
+        """Append a row and return it."""
         row = Map(**values)
         self.rows.append(row)
         return row
 
     async def partial_update(self, id: int, **values: Any) -> Map | None:
+        """Apply the given fields to a matching row and return it."""
         for index, row in enumerate(self.rows):
             if row.id == id:
                 updated = Map(
@@ -246,6 +260,7 @@ class _FakeMapsRepository:
         return None
 
     async def delete_many_by_set_id(self, *, set_id: int, server: str) -> int:
+        """Drop every row of a set on one server, recording the call."""
         self.deleted_set_ids.append((set_id, server))
         before = len(self.rows)
         self.rows = [
@@ -257,24 +272,33 @@ class _FakeMapsRepository:
 
 
 class _FakeMapsetsRepository:
+    """A mapsets repository that records what it was asked to write."""
+
     def __init__(self) -> None:
+        """Start with nothing recorded."""
         self.upserts: list[dict[str, Any]] = []
         self.deletes: list[tuple[int, str]] = []
 
     async def upsert(self, *, id: int, server: str, last_osuapi_check: Any) -> Any:
+        """Record a set write."""
         self.upserts.append({"id": id, "server": server})
         return None
 
     async def delete_one(self, *, id: int, server: str) -> None:
+        """Record a set delete."""
         self.deletes.append((id, server))
 
 
 class _FakeSubmissionsRepository:
+    """A submissions repository over an in-memory row list."""
+
     def __init__(self, *, existing: list[MapSubmission] | None = None) -> None:
+        """Start with the given submission rows."""
         self.rows: list[MapSubmission] = list(existing or [])
         self.deletes: list[int] = []
 
     async def create(self, **values: Any) -> MapSubmission:
+        """Append a submission row and return it."""
         row = MapSubmission(
             review_state=_PENDING,
             submitted_at=_NOW,
@@ -288,15 +312,19 @@ class _FakeSubmissionsRepository:
         return row
 
     async def fetch_one(self, set_id: int) -> MapSubmission | None:
+        """The submission for a set id, or None."""
         return next((row for row in self.rows if row.set_id == set_id), None)
 
     async def fetch_many(self, **filters: Any) -> list[MapSubmission]:
+        """Every submission matching the filters."""
         return [row for row in self.rows if self._matches(row, filters)]
 
     async def fetch_count(self, **filters: Any) -> int:
+        """How many submissions match the filters."""
         return len([row for row in self.rows if self._matches(row, filters)])
 
     def _matches(self, row: MapSubmission, filters: dict[str, Any]) -> bool:
+        """Whether one row satisfies the given filters."""
         owner = filters.get("submitter_user_id")
         state = filters.get("review_state")
         if owner is not None and row.submitter_user_id != owner:
@@ -313,6 +341,7 @@ class _FakeSubmissionsRepository:
         reviewed_by: int | None | _UnsetSentinel = UNSET,
         review_note: str | None | _UnsetSentinel = UNSET,
     ) -> MapSubmission | None:
+        """Apply the given fields to a submission and return it."""
         for index, row in enumerate(self.rows):
             if row.set_id != set_id:
                 continue
@@ -330,16 +359,20 @@ class _FakeSubmissionsRepository:
         return None
 
     async def delete_one(self, set_id: int) -> None:
+        """Remove a submission, recording the call."""
         self.deletes.append(set_id)
         self.rows = [row for row in self.rows if row.set_id != set_id]
 
 
 class _FakeScoresRepository:
+    """A scores repository with scripted per-map counts."""
+
     def __init__(
         self,
         *,
         counts: dict[tuple[str, int | None], int] | None = None,
     ) -> None:
+        """Start with the given score counts."""
         self._counts = counts or {}
         self.deleted_md5s: list[list[str]] = []
 
@@ -349,19 +382,25 @@ class _FakeScoresRepository:
         user_id: int | None = None,
         **_: Any,
     ) -> int:
+        """The scripted score count for a map, optionally scoped to one player."""
         assert map_md5 is not None
         return self._counts.get((map_md5, user_id), 0)
 
     async def delete_many_by_map_md5s(self, map_md5s: Any) -> int:
+        """Record a score deletion and report how many rows it claimed."""
         self.deleted_md5s.append(list(map_md5s))
         return len(list(map_md5s))
 
 
 class _FakeIdSequence:
+    """An allocator handing out consecutive ids from the private floor."""
+
     def __init__(self, *, start: int = _FLOOR) -> None:
+        """Start at the floor."""
         self._next = start
 
     async def allocate(self, *, kind: Any, allocated_by: int) -> int:
+        """The next id, recording what it was for."""
         allocated = self._next
         self._next += 1
         return allocated
@@ -373,6 +412,7 @@ class _FakeIdSequence:
         count: int,
         allocated_by: int,
     ) -> list[int]:
+        """The next ``count`` ids."""
         return [
             await self.allocate(kind=kind, allocated_by=allocated_by)
             for _ in range(count)
@@ -380,47 +420,67 @@ class _FakeIdSequence:
 
 
 class _FakeTransaction:
+    """A transaction that records when it opened and closed."""
+
     def __init__(self, log: list[str]) -> None:
+        """Bind the transaction to the shared call log."""
         self._log = log
 
     async def __aenter__(self) -> _FakeTransaction:
+        """Record the commit boundary opening."""
         self._log.append("transaction:enter")
         return self
 
     async def __aexit__(self, *args: Any) -> None:
+        """Record the commit boundary closing."""
         self._log.append("transaction:exit")
 
 
 class _FakeDatabase:
+    """A database that hands out recording transactions."""
+
     def __init__(self, log: list[str]) -> None:
+        """Start with an empty call log."""
         self._log = log
 
     def transaction(self) -> _FakeTransaction:
+        """A recording transaction over the shared log."""
         return _FakeTransaction(self._log)
 
 
 class _RecordingFileWriter:
+    """A file writer that keeps the bytes in memory and logs the order of writes."""
+
     def __init__(self, log: list[str]) -> None:
+        """Start with nothing written."""
         self.written: dict[Path, bytes] = {}
         self._log = log
 
     async def __call__(self, path: Path, data: bytes) -> None:
+        """Record a write and its bytes."""
         self.written[path] = data
         self._log.append(f"write:{path.name}")
 
 
 class _RecordingFileRemover:
+    """A file remover that logs the order of removals."""
+
     def __init__(self, log: list[str]) -> None:
+        """Start with nothing removed."""
         self.removed: list[Path] = []
         self._log = log
 
     def __call__(self, path: Path) -> None:
+        """Record a removal."""
         self.removed.append(path)
         self._log.append(f"remove:{path.name}")
 
 
 class _FakeDifficultyCalculator:
+    """A calculator returning fixed attributes, so rating never depends on the real one."""
+
     def __init__(self, *, stars: float = 5.5, max_combo: int = 2) -> None:
+        """Record the attributes this calculator will return."""
         self._stars = stars
         self._max_combo = max_combo
         self.calls: list[tuple[str, int]] = []
@@ -431,6 +491,7 @@ class _FakeDifficultyCalculator:
         osu_file_content: str,
         mode: int,
     ) -> BeatmapDifficultyAttributes:
+        """Return the fixed attributes, recording the call."""
         self.calls.append((osu_file_content, mode))
         return BeatmapDifficultyAttributes(
             stars=self._stars,
@@ -439,10 +500,14 @@ class _FakeDifficultyCalculator:
 
 
 class _RecordingCacheEvictor:
+    """A cache evictor that records exactly what it was asked to drop."""
+
     def __init__(self) -> None:
+        """Start with nothing evicted."""
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, *, set_id: int, map_ids: Any, map_md5s: Any) -> None:
+        """Record an eviction."""
         self.calls.append(
             {
                 "set_id": set_id,
@@ -464,6 +529,7 @@ class _Harness:
         calculator: _FakeDifficultyCalculator | None = None,
         max_submissions_per_user: int = 20,
     ) -> None:
+        """Build the service over fakes, defaulting each one the test did not supply."""
         self.log: list[str] = []
         self.maps = maps or _FakeMapsRepository()
         self.mapsets = _FakeMapsetsRepository()
@@ -499,6 +565,7 @@ def _submission(
     owner_id: int = 6,
     review_state: str = _PENDING,
 ) -> MapSubmission:
+    """A submission row in the given state."""
     return MapSubmission(
         set_id=set_id,
         submitter_user_id=owner_id,
@@ -524,6 +591,7 @@ def _hosted_map(
     status: int = RankedStatus.Pending.value,
     server: str = MapServer.PRIVATE.value,
 ) -> Map:
+    """A privately-hosted ``maps`` row."""
     return Map(
         id=map_id,
         server=server,
@@ -552,6 +620,7 @@ def _hosted_map(
 
 
 def _osz_members(data: bytes) -> dict[str, bytes]:
+    """Every member of an archive, by name."""
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         return {info.filename: archive.read(info) for info in archive.infolist()}
 
@@ -560,6 +629,7 @@ def _osz_members(data: bytes) -> dict[str, bytes]:
 
 
 async def test_submitting_hosts_the_set_privately() -> None:
+    """A good upload writes the set and every map as privately hosted, with ids above the floor and no id reused."""
     harness = _Harness()
 
     result = await harness.service.submit_beatmap_archive(
@@ -581,6 +651,7 @@ async def test_submitting_hosts_the_set_privately() -> None:
 
 
 async def test_hosted_maps_start_pending_and_frozen() -> None:
+    """Hosted maps start Pending and frozen: no leaderboard, no pp, and a human owns the status."""
     harness = _Harness()
 
     await harness.service.submit_beatmap_archive(
@@ -596,6 +667,7 @@ async def test_hosted_maps_start_pending_and_frozen() -> None:
 
 
 async def test_the_creator_is_the_submitting_account_not_the_file() -> None:
+    """Attribution follows the account, while what the file claimed is kept on the submission."""
     harness = _Harness()
 
     await harness.service.submit_beatmap_archive(
@@ -609,6 +681,7 @@ async def test_the_creator_is_the_submitting_account_not_the_file() -> None:
 
 
 async def test_the_written_file_matches_the_row_and_the_archive() -> None:
+    """The stored md5 describes the bytes on disk, and the copy inside the served ``.osz`` is identical to them."""
     harness = _Harness()
 
     result = await harness.service.submit_beatmap_archive(
@@ -629,6 +702,7 @@ async def test_the_written_file_matches_the_row_and_the_archive() -> None:
 
 
 async def test_our_identity_replaces_whatever_the_upload_claimed() -> None:
+    """Our ids and creator replace the upload's, and the ids it arrived with are gone."""
     harness = _Harness()
 
     result = await harness.service.submit_beatmap_archive(
@@ -650,6 +724,7 @@ async def test_our_identity_replaces_whatever_the_upload_claimed() -> None:
 
 
 async def test_non_difficulty_members_survive_the_repack() -> None:
+    """The audio a difficulty references survives the repack unchanged."""
     harness = _Harness()
 
     await harness.service.submit_beatmap_archive(
@@ -663,6 +738,7 @@ async def test_non_difficulty_members_survive_the_repack() -> None:
 
 
 async def test_files_are_written_before_the_rows_are_committed() -> None:
+    """Files land before the commit, because a ``maps`` row without its ``.osu`` breaks score submission for everyone who plays the map."""
     harness = _Harness()
 
     await harness.service.submit_beatmap_archive(
@@ -679,7 +755,11 @@ async def test_files_are_written_before_the_rows_are_committed() -> None:
 
 
 async def test_a_failed_commit_removes_every_written_file() -> None:
+    """A commit that blows up leaves no orphaned file claiming to be a hosted set."""
+
     class _FailingSubmissions(_FakeSubmissionsRepository):
+        """A submissions repository whose create blows up mid-transaction."""
+
         async def create(self, **values: Any) -> MapSubmission:
             raise RuntimeError("database went away")
 
@@ -706,6 +786,7 @@ async def test_a_failed_commit_removes_every_written_file() -> None:
     ],
 )
 async def test_an_ineligible_account_cannot_submit(submitter: User) -> None:
+    """A restricted or unverified account is refused before anything is written."""
     harness = _Harness()
 
     result = await harness.service.submit_beatmap_archive(
@@ -718,6 +799,7 @@ async def test_an_ineligible_account_cannot_submit(submitter: User) -> None:
 
 
 async def test_a_silenced_account_cannot_submit() -> None:
+    """A silenced account is refused before anything is written."""
     harness = _Harness()
     silenced = _user(silence_end=int(_NOW.timestamp()) + 600)
 
@@ -731,6 +813,7 @@ async def test_a_silenced_account_cannot_submit() -> None:
 
 
 async def test_the_per_user_quota_is_enforced() -> None:
+    """The per-user submission quota is enforced before anything is written."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         max_submissions_per_user=1,
@@ -746,6 +829,7 @@ async def test_the_per_user_quota_is_enforced() -> None:
 
 
 async def test_a_broken_archive_is_refused() -> None:
+    """An unreadable archive is refused before anything is written."""
     harness = _Harness()
 
     result = await harness.service.submit_beatmap_archive(
@@ -758,6 +842,7 @@ async def test_a_broken_archive_is_refused() -> None:
 
 
 async def test_an_unparseable_difficulty_names_the_file() -> None:
+    """An unparseable difficulty is refused and the error names the offending file."""
     harness = _Harness()
     osz = _archive({"broken [Easy].osu": b"this is not a beatmap"})
 
@@ -773,6 +858,7 @@ async def test_an_unparseable_difficulty_names_the_file() -> None:
 
 
 async def test_duplicate_difficulty_names_are_refused() -> None:
+    """Two difficulties sharing a name are refused."""
     harness = _Harness()
     osz = _archive(
         {
@@ -791,6 +877,7 @@ async def test_duplicate_difficulty_names_are_refused() -> None:
 
 
 async def test_mismatched_song_metadata_is_refused() -> None:
+    """Difficulties disagreeing on artist or title are refused."""
     harness = _Harness()
     osz = _archive(
         {
@@ -809,6 +896,7 @@ async def test_mismatched_song_metadata_is_refused() -> None:
 
 
 async def test_a_duplicate_checksum_is_refused() -> None:
+    """A colliding md5 is refused: it is globally unique, and the osu!api refresh writes with REPLACE INTO, so the collision would let a refresh overwrite our row."""
     # the collision that matters: maps.md5 is globally unique and the osu!api
     # refresh writes with REPLACE INTO, so a copy of a mirrored map's .osu would
     # let that refresh overwrite our row.
@@ -832,6 +920,7 @@ async def test_a_duplicate_checksum_is_refused() -> None:
 
 
 async def test_a_duplicate_filename_is_refused() -> None:
+    """A colliding filename is refused: filename lookups carry no server filter, so it would shadow a real map."""
     # filename lookups have no server filter, so a duplicate would shadow a real
     # map in osu!'s own requests.
     harness = _Harness()
@@ -857,7 +946,11 @@ async def test_a_duplicate_filename_is_refused() -> None:
 
 
 async def test_an_unratable_difficulty_is_refused() -> None:
+    """A difficulty the calculator cannot rate is refused before anything is written."""
+
     class _FailingCalculator(_FakeDifficultyCalculator):
+        """A calculator that refuses to rate anything."""
+
         def __call__(self, **kwargs: Any) -> BeatmapDifficultyAttributes:
             raise BeatmapDifficultyError("cannot rate")
 
@@ -918,6 +1011,7 @@ async def test_what_an_owner_may_set(
     review_state: str,
     expected: BeatmapSubmissionResultCode,
 ) -> None:
+    """Exactly which statuses a submitter may give their own map, and which are refused."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(
             existing=[_submission(review_state=review_state)],
@@ -943,6 +1037,7 @@ async def test_what_an_owner_may_set(
     ],
 )
 async def test_staff_may_set_any_ranked_status(status: int) -> None:
+    """Staff may set any ranked status."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map()]),
@@ -959,6 +1054,7 @@ async def test_staff_may_set_any_ranked_status(status: int) -> None:
 
 
 async def test_a_nominator_may_rank_a_map() -> None:
+    """NOMINATOR is the existing manage-ranked-status bit and is reused rather than replaced by a new privilege."""
     # NOMINATOR is the existing "manage maps ranked status" bit; reuse, don't
     # invent a new privilege.
     harness = _Harness(
@@ -976,6 +1072,7 @@ async def test_a_nominator_may_rank_a_map() -> None:
 
 
 async def test_an_owner_cannot_review_their_own_submission() -> None:
+    """A submitter cannot move their own submission's review state."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map()]),
@@ -992,6 +1089,7 @@ async def test_an_owner_cannot_review_their_own_submission() -> None:
 
 
 async def test_a_stranger_cannot_touch_someone_else_s_submission() -> None:
+    """A stranger gets 'missing', not 'forbidden': a pending submission's existence is not disclosed."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission(owner_id=6)]),
         maps=_FakeMapsRepository(existing=[_hosted_map()]),
@@ -1009,6 +1107,7 @@ async def test_a_stranger_cannot_touch_someone_else_s_submission() -> None:
 
 
 async def test_rejecting_a_submission_strips_its_leaderboard() -> None:
+    """Rejecting a submission drops its maps back to Pending, so no leaderboard survives the rejection."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(
             existing=[_submission(review_state=_APPROVED)],
@@ -1030,6 +1129,7 @@ async def test_rejecting_a_submission_strips_its_leaderboard() -> None:
 
 
 async def test_a_status_change_evicts_the_beatmap_cache() -> None:
+    """A status change evicts the cached beatmap objects the leaderboard reads, which would otherwise serve the old status."""
     # `app.state.cache` holds live Beatmap objects whose `.status` the leaderboard
     # reads, so a stale entry would keep serving the old status.
     harness = _Harness(
@@ -1053,6 +1153,7 @@ async def test_a_status_change_evicts_the_beatmap_cache() -> None:
 
 
 async def test_a_status_change_applies_to_every_difficulty() -> None:
+    """A status change covers every difficulty in the set."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(
@@ -1078,6 +1179,7 @@ async def test_a_status_change_applies_to_every_difficulty() -> None:
 
 
 async def test_an_owner_sees_their_own_pending_submission() -> None:
+    """A submitter can read their own pending submission."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map()]),
@@ -1090,6 +1192,7 @@ async def test_an_owner_sees_their_own_pending_submission() -> None:
 
 
 async def test_a_stranger_cannot_see_a_pending_submission() -> None:
+    """A stranger cannot see a pending submission at all."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
     )
@@ -1103,6 +1206,7 @@ async def test_a_stranger_cannot_see_a_pending_submission() -> None:
 
 
 async def test_anyone_can_see_an_approved_submission() -> None:
+    """An approved submission is public."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(
             existing=[_submission(review_state=_APPROVED)],
@@ -1116,6 +1220,7 @@ async def test_anyone_can_see_an_approved_submission() -> None:
 
 
 async def test_staff_can_see_a_pending_submission() -> None:
+    """Staff can read a pending submission."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map()]),
@@ -1127,6 +1232,7 @@ async def test_staff_can_see_a_pending_submission() -> None:
 
 
 async def test_an_unknown_set_is_missing() -> None:
+    """An unknown set id reads as missing."""
     harness = _Harness()
 
     result = await harness.service.fetch_submission(actor=_staff(), set_id=12345)
@@ -1138,6 +1244,7 @@ async def test_an_unknown_set_is_missing() -> None:
 
 
 async def test_an_owner_can_delete_their_untouched_set() -> None:
+    """Deleting an unplayed set takes its rows, its scores and its files."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map(md5="c" * 32)]),
@@ -1158,6 +1265,7 @@ async def test_an_owner_can_delete_their_untouched_set() -> None:
 
 
 async def test_deletion_commits_the_rows_before_removing_the_files() -> None:
+    """Deletion commits before unlinking, the opposite order to creation, because here the safe residue is a file with no row."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map()]),
@@ -1174,6 +1282,7 @@ async def test_deletion_commits_the_rows_before_removing_the_files() -> None:
 
 
 async def test_an_owner_cannot_delete_a_set_others_have_played() -> None:
+    """A submitter cannot erase other players' history by deleting a set they played."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map(md5="d" * 32)]),
@@ -1190,6 +1299,7 @@ async def test_an_owner_cannot_delete_a_set_others_have_played() -> None:
 
 
 async def test_an_owner_can_delete_a_set_only_they_have_played() -> None:
+    """A set only its owner has played is still theirs to delete."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map(md5="e" * 32)]),
@@ -1202,6 +1312,7 @@ async def test_an_owner_can_delete_a_set_only_they_have_played() -> None:
 
 
 async def test_staff_can_delete_a_set_others_have_played() -> None:
+    """Staff can delete a set others have played."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(existing=[_submission()]),
         maps=_FakeMapsRepository(existing=[_hosted_map(md5="d" * 32)]),
@@ -1214,6 +1325,7 @@ async def test_staff_can_delete_a_set_others_have_played() -> None:
 
 
 async def test_a_stranger_cannot_delete_a_set() -> None:
+    """A stranger deleting a visible set is a real refusal, not a 'missing'."""
     harness = _Harness(
         submissions=_FakeSubmissionsRepository(
             existing=[_submission(review_state=_APPROVED)],

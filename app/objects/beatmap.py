@@ -212,6 +212,11 @@ class Beatmap:
         filename: str = "",
         server: str = MapServer.OSU,
     ) -> None:
+        """Build a beatmap, defaulting to an osu!-mirrored one.
+
+        ``server`` is what marks a map as hosted here, and every osu!api refresh path
+        reads it before deleting anything.
+        """
         self.set = map_set
 
         self.md5 = md5
@@ -508,6 +513,7 @@ class BeatmapSet:
         maps: list[Beatmap] | None = None,
         server: str = MapServer.OSU,
     ) -> None:
+        """Build a beatmap set, defaulting to an osu!-mirrored one."""
         self.id = id
 
         self.maps = maps or []

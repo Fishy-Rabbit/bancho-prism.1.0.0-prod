@@ -125,6 +125,11 @@ async def _announce_first_place_to_discord(
     *,
     previous_first_place_score: FirstPlaceScore | None,
 ) -> None:
+    """Post one #1 embed, re-checking the full #1 condition first.
+
+    Split from the caller so the caller can swallow every exception: a webhook
+    must never take down score submission.
+    """
     # re-check the full #1 condition here (not just BEST): being a personal best
     # doesn't mean the play took the top of the board, and a restricted player's
     # #1 must never leak to Discord. This is the same gate the in-game announce
