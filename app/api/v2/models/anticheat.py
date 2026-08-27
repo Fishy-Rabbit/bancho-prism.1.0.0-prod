@@ -38,6 +38,39 @@ class AnticheatFlagModel(BaseModel):
     resolution_note: str | None
 
 
+class ReplaySimilarityMatchModel(BaseModel):
+    """One same-map replay compared against a score, with its D3 (steal) verdict.
+
+    Mirrors ``analysis_query.SimilarityMatch``: the compared score's id + owner,
+    the cursor distances (osu!px; lower is more identical), the count of aligned
+    points behind them, and the graded signal flattened to the same
+    ``severity``/``flagged``/``detail``/``evidence`` shape as ``AnticheatFlagModel``
+    so a reviewer's client reads one signal representation everywhere.
+    """
+
+    score_id: int
+    user_id: int
+    mean_distance: float
+    median_distance: float
+    overlap_points: int
+    severity: str
+    flagged: bool
+    detail: str
+    evidence: dict[str, float]
+
+
+class ReplaySimilarityModel(BaseModel):
+    """The nearest same-map replays to one score, most-similar first.
+
+    ``compared`` is how many candidates were actually comparable; ``matches`` is
+    the closest handful, so a reviewer opens on the likeliest steal.
+    """
+
+    score_id: int
+    compared: int
+    matches: list[ReplaySimilarityMatchModel]
+
+
 # input models
 
 

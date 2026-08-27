@@ -65,6 +65,7 @@ from app.repositories.users import UsersRepository
 from app.repositories.web_sessions import WebSessionsRepository
 from app.services.account_settings import AccountSettingsService
 from app.services.accounts import AccountRegistrationService
+from app.services.anticheat.analysis_query import ReplayAnalysisQueryService
 from app.services.anticheat.flag_review_queue import AnticheatReviewService
 from app.services.avatars import AvatarsService
 from app.services.bancho import BanchoAuthenticationService
@@ -138,6 +139,32 @@ def _remove_file(path: Path) -> None:
     # missing_ok: this runs both as rollback cleanup (where a file may never have
     # been written) and as teardown, and neither case is an error.
     path.unlink(missing_ok=True)
+
+
+def _read_replay_file_sync(path: Path) -> bytes | None:
+    """Read a replay file, or ``None`` if it is not there.
+
+    Mirrors ``worker_runtime._read_replay_bytes_sync``: ``None`` is the signal
+    for "no replay on disk" (the analysis service turns it into a 404); any other
+    OS error propagates rather than being masked as a missing replay.
+    """
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
+
+
+async def _read_stored_replay_bytes(score_id: int) -> bytes | None:
+    """Read a committed replay's raw frame bytes off the replay volume.
+
+    The staff analysis endpoints re-parse the same ``{score_id}.osr`` the worker
+    analysed. File I/O is pushed off the event loop, like the rest of the replay
+    path.
+    """
+    return await asyncio.to_thread(
+        _read_replay_file_sync,
+        REPLAYS_PATH / f"{score_id}.osr",
+    )
 
 
 def _evict_beatmap_cache(
@@ -827,6 +854,22 @@ def get_anticheat_review_service(
     logs: Annotated[LogsRepository, Depends(get_logs_repository)],
 ) -> AnticheatReviewService:
     return AnticheatReviewService(flags=anticheat_flags, logs=logs)
+
+
+def get_anticheat_analysis_service(
+    scores: Annotated[ScoresRepository, Depends(get_scores_repository)],
+) -> ReplayAnalysisQueryService:
+    """The on-demand staff replay-analysis service (series + D3 similarity).
+
+    Reads the same ``.osr`` files the worker analysed and the ``scores`` row for
+    the real mods/candidate lookup; everything it returns is recomputed live and
+    advisory (flag, never ban).
+    """
+    return ReplayAnalysisQueryService(
+        read_replay_bytes=_read_stored_replay_bytes,
+        fetch_score=scores.fetch_one,
+        fetch_candidates=scores.fetch_replay_candidates,
+    )
 
 
 def get_discord_linking_service(

@@ -16,6 +16,7 @@ user) instead of FastAPI's default error envelope.
 from __future__ import annotations
 
 from typing import Annotated
+from typing import Any
 
 from fastapi import APIRouter
 from fastapi import Depends
@@ -28,10 +29,15 @@ from app.api.v2.common import responses
 from app.api.v2.common.responses import Failure
 from app.api.v2.common.responses import Success
 from app.api.v2.models.anticheat import AnticheatFlagModel
+from app.api.v2.models.anticheat import ReplaySimilarityMatchModel
+from app.api.v2.models.anticheat import ReplaySimilarityModel
 from app.api.v2.models.anticheat import ResolveFlagRequest
 from app.constants.privileges import Privileges
 from app.repositories.anticheat_flags import AnticheatFlagStatus
 from app.repositories.users import User
+from app.services.anticheat.analysis_query import ReplayAnalysisQueryService
+from app.services.anticheat.analysis_query import ReplayUnavailableError
+from app.services.anticheat.analysis_query import SimilaritySummary
 from app.services.anticheat.flag_review_queue import AnticheatReviewService
 
 router = APIRouter()
@@ -158,3 +164,107 @@ async def resolve_anticheat_flag(
         )
 
     return responses.success(AnticheatFlagModel.model_validate(flag))
+
+
+def _similarity_model(summary: SimilaritySummary) -> ReplaySimilarityModel:
+    """Flatten a service ``SimilaritySummary`` into its wire model.
+
+    Each match's graded ``DetectionSignal`` is projected to the same
+    ``severity``/``flagged``/``detail``/``evidence`` fields the flag model uses,
+    so a reviewer's client sees one signal shape across the anticheat API.
+    """
+    return ReplaySimilarityModel(
+        score_id=summary.score_id,
+        compared=summary.compared,
+        matches=[
+            ReplaySimilarityMatchModel(
+                score_id=match.score_id,
+                user_id=match.user_id,
+                mean_distance=match.mean_distance,
+                median_distance=match.median_distance,
+                overlap_points=match.overlap_points,
+                severity=match.signal.severity.value,
+                flagged=match.signal.flagged,
+                detail=match.signal.detail,
+                evidence=match.signal.evidence,
+            )
+            for match in summary.matches
+        ],
+    )
+
+
+@router.get("/anticheat/replays/{score_id}/analysis")
+async def get_replay_analysis_series(
+    score_id: int,
+    *,
+    actor: Annotated[
+        User | None,
+        Depends(actors.get_optional_actor),
+    ],
+    analysis_service: Annotated[
+        ReplayAnalysisQueryService,
+        Depends(api_dependencies.get_anticheat_analysis_service),
+    ],
+) -> Success[dict[str, Any]] | Failure:
+    """The graph-ready analysis series for one score, recomputed on demand.
+
+    Staff-only. Returns 404 both when the score is unknown and when its replay
+    is missing/undecodable -- the reviewer just learns there is nothing to plot.
+    """
+    denied = _staff_gate(actor)
+    if denied is not None:
+        return denied
+
+    try:
+        bundle = await analysis_service.analysis_series(score_id)
+    except ReplayUnavailableError as exc:
+        return responses.failure(
+            message=str(exc),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    if bundle is None:
+        return responses.failure(
+            message="Score not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    return responses.success(bundle)
+
+
+@router.get("/anticheat/replays/{score_id}/similarity")
+async def get_replay_similarity(
+    score_id: int,
+    *,
+    actor: Annotated[
+        User | None,
+        Depends(actors.get_optional_actor),
+    ],
+    analysis_service: Annotated[
+        ReplayAnalysisQueryService,
+        Depends(api_dependencies.get_anticheat_analysis_service),
+    ],
+) -> Success[ReplaySimilarityModel] | Failure:
+    """The nearest same-map replays to one score by D3 cursor distance.
+
+    Staff-only, advisory (flag, never ban): it ranks how close other players'
+    replays are to this one so a reviewer can spot a steal. 404 if the score is
+    unknown or its own replay is missing/undecodable.
+    """
+    denied = _staff_gate(actor)
+    if denied is not None:
+        return denied
+
+    try:
+        summary = await analysis_service.similarity(score_id)
+    except ReplayUnavailableError as exc:
+        return responses.failure(
+            message=str(exc),
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+    if summary is None:
+        return responses.failure(
+            message="Score not found.",
+            status_code=status.HTTP_404_NOT_FOUND,
+        )
+
+    return responses.success(_similarity_model(summary))
