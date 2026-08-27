@@ -281,6 +281,22 @@ class ReplayHeader:
     play_time: datetime
 
 
+@dataclass(frozen=True, slots=True)
+class ReplayCandidate:
+    """A same-map/mode score to compare one replay against for D3 (steal).
+
+    Deliberately minimal -- only what the similarity check needs: the ``id`` to
+    load the candidate's ``.osr`` and label the match back to a reviewer, the
+    owning ``user_id`` (both to display and to let the caller drop the score's
+    own player), and ``mods`` (today D3 compares raw coordinates, but the
+    mod-aware normalisation deferred to Phase 3 will need them).
+    """
+
+    score_id: int
+    user_id: int
+    mods: int
+
+
 class ScoresRepository:
     def __init__(self, database: Database) -> None:
         self._database = database
@@ -985,6 +1001,54 @@ class ScoresRepository:
         select_stmt = select(ScoresTable.userid).where(ScoresTable.id == score_id)
         row = await self._database.fetch_one(select_stmt)
         return int(row["userid"]) if row is not None else None
+
+    async def fetch_replay_candidates(
+        self,
+        *,
+        map_md5: str,
+        mode: int,
+        exclude_score_id: int,
+        exclude_user_id: int | None = None,
+        limit: int = 50,
+    ) -> list[ReplayCandidate]:
+        """Same-map/mode leaderboard scores to compare a replay against for D3.
+
+        The candidate pool for a replay-steal check: other best scores on the
+        same beatmap and mode, most-competitive first, capped at ``limit``. The
+        score under analysis is always excluded; ``exclude_user_id`` additionally
+        drops that player's *own* other scores, since matching one's own earlier
+        play is not a steal. Ordered by raw score so the top of the leaderboard --
+        where a stolen top play is most likely to sit -- stays in the pool even
+        when it is truncated. Restricted to ``BEST`` rows so the comparison set
+        is one-per-player and index-backed, not every historical attempt.
+        """
+        select_stmt = (
+            select(
+                ScoresTable.id.label("score_id"),
+                ScoresTable.userid.label("user_id"),
+                ScoresTable.mods,
+            )
+            .where(
+                ScoresTable.map_md5 == map_md5,
+                ScoresTable.mode == mode,
+                ScoresTable.status == SubmissionStatus.BEST.value,
+                ScoresTable.id != exclude_score_id,
+            )
+            .order_by(ScoresTable.score.desc())
+            .limit(limit)
+        )
+        if exclude_user_id is not None:
+            select_stmt = select_stmt.where(ScoresTable.userid != exclude_user_id)
+
+        rows = await self._database.fetch_all(select_stmt)
+        return [
+            ReplayCandidate(
+                score_id=row["score_id"],
+                user_id=row["user_id"],
+                mods=row["mods"],
+            )
+            for row in rows
+        ]
 
     async def fetch_count(
         self,
