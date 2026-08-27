@@ -50,7 +50,7 @@ from app.adapters.osr_replay import ReplayKeys
 # one and re-analyse it, rather than trusting a stale vector against fresh
 # thresholds. This is load-bearing for the flag-not-ban policy: thresholds are
 # re-derived from features, so features and thresholds must be the same vintage.
-EXTRACTOR_VERSION = 2
+EXTRACTOR_VERSION = 4
 
 # --- tap-aligned segmentation cutoffs (ms), matching calibration_v2.json ----
 _STREAM_MAX_DT_MS = 150
@@ -89,6 +89,16 @@ _FROZEN_MIN_FRAMES = 3
 
 # jitter spike: acceleration above mean + this many population std devs.
 _JITTER_SIGMA = 3.0
+
+# aim-correction "snap" (circleguard Snap): a cursor sample whose in/out legs
+# reverse hard -- the A-B-C angle is below _SNAP_MAX_ANGLE_DEG and at least one
+# leg exceeds _SNAP_MIN_DISTANCE (osu!px). A near-zero angle means the cursor
+# darted out to a point and came straight back, the tell of a correction snapped
+# onto a note rather than a human arc through it. Defaults mirror circleguard's
+# (10 deg / 8 px); provisional, re-derived from the server baseline in the
+# learning phase. Beatmap-free -- pure cursor geometry.
+_SNAP_MAX_ANGLE_DEG = 10.0
+_SNAP_MIN_DISTANCE = 8.0
 
 
 class SegmentKind(StrEnum):
@@ -158,6 +168,20 @@ class FrozenSpan:
 
 
 @dataclass(frozen=True, slots=True)
+class Snap:
+    """One circleguard aim-correction snap at cursor sample B.
+
+    ``angle_deg`` is the A-B-C angle at the snap vertex (small == a hard
+    reversal); ``distance`` is the longer leg |AB|/|BC| in field units (how far
+    the dart reached); ``t_ms`` is B's absolute time in the replay.
+    """
+
+    t_ms: int
+    angle_deg: float
+    distance: float
+
+
+@dataclass(frozen=True, slots=True)
 class ReplayFeatures:
     """Everything the detectors read off one replay.
 
@@ -172,6 +196,12 @@ class ReplayFeatures:
     uses_keyboard: bool
 
     hold: Distribution
+    # inter-frame interval (ms) distribution over the raw cursor stream. Frame
+    # cadence is the timewarp tell: a client running the game clock fast leaves a
+    # frametime distribution shifted below the engine's ~16.67 ms (60 fps update)
+    # floor, or bunched at an unnatural constant. Beatmap-free -- it is a property
+    # of how the client sampled, not of what was played.
+    frametime: Distribution
 
     jump: SegmentStats
     stream: SegmentStats
@@ -181,6 +211,10 @@ class ReplayFeatures:
     straight_runs: tuple[StraightRun, ...]
     constant_velocity_runs: tuple[ConstantVelocityRun, ...]
     frozen_spans: tuple[FrozenSpan, ...]
+    # circleguard aim-correction snaps over the raw cursor stream (hard A-B-C
+    # reversals across a real distance). Beatmap-free; the D2 detector reads
+    # their density and series.py replays them as playback markers.
+    snaps: tuple[Snap, ...]
 
     total_path: float
     straight_line_displacement: float
@@ -355,6 +389,21 @@ def _hold_durations(frames: tuple[ReplayFrame, ...]) -> list[float]:
     return durations
 
 
+def _frametimes(frames: tuple[ReplayFrame, ...]) -> list[float]:
+    """Positive inter-frame intervals (ms), one per frame.
+
+    ``ReplayFrame.time_delta`` is already the gap since the previous frame (the
+    ``.osr`` frame stream is delta-timed, and the ``-12345`` RNG-seed frame is
+    stripped by the parser), so the frametime series is the deltas themselves.
+    Non-positive deltas are dropped: the lead-in frames, duplicate-timestamp
+    frames, and the rare rewind artifact are not real sampling intervals and
+    would only skew the distribution the timewarp detector reads. A replay with
+    no positive-delta frames yields an empty list, which ``_summarize`` turns
+    into an all-zero ``n == 0`` distribution.
+    """
+    return [float(frame.time_delta) for frame in frames if frame.time_delta > 0]
+
+
 # --- top-level extraction ---------------------------------------------------
 
 
@@ -369,6 +418,7 @@ def extract_features(replay: Replay) -> ReplayFeatures:
     uses_keyboard, taps = _tap_samples(replay.frames)
 
     hold = _summarize(_hold_durations(replay.frames))
+    frametime = _summarize(_frametimes(replay.frames))
     segments = _segment_features(taps)
     velocities = _step_velocities(samples)
     jitter_mean, jitter_std, jitter_threshold, jitter_spikes = _jitter(velocities)
@@ -380,6 +430,7 @@ def extract_features(replay: Replay) -> ReplayFeatures:
         tap_count=len(taps),
         uses_keyboard=uses_keyboard,
         hold=hold,
+        frametime=frametime,
         jump=segments[SegmentKind.JUMP],
         stream=segments[SegmentKind.STREAM],
         idle=segments[SegmentKind.IDLE],
@@ -387,6 +438,7 @@ def extract_features(replay: Replay) -> ReplayFeatures:
         straight_runs=_straight_runs(samples),
         constant_velocity_runs=_constant_velocity_runs(samples, velocities),
         frozen_spans=_frozen_spans(samples),
+        snaps=_snaps(samples),
         total_path=total_path,
         straight_line_displacement=straight_line,
         tortuosity=tortuosity,
@@ -629,6 +681,51 @@ def _frozen_spans(samples: list[tuple[int, float, float]]) -> tuple[FrozenSpan, 
     return tuple(spans)
 
 
+def _snap_angle_deg(bax: float, bay: float, bcx: float, bcy: float) -> float:
+    """Angle (degrees) at B between the legs B->A and B->C.
+
+    Returns 180.0 (a straight pass-through, never a snap) when either leg is
+    below ``_MIN_LEG_LENGTH``, so a stationary neighbour can't manufacture a
+    spurious reversal from an undefined direction.
+    """
+    ba_len = math.hypot(bax, bay)
+    bc_len = math.hypot(bcx, bcy)
+    if ba_len < _MIN_LEG_LENGTH or bc_len < _MIN_LEG_LENGTH:
+        return 180.0
+    cos = (bax * bcx + bay * bcy) / (ba_len * bc_len)
+    cos = max(-1.0, min(1.0, cos))  # clamp for float error before acos
+    return math.degrees(math.acos(cos))
+
+
+def _snaps(samples: list[tuple[int, float, float]]) -> tuple[Snap, ...]:
+    """circleguard aim-correction snaps over consecutive cursor samples.
+
+    For every interior sample B with neighbours A and C, a snap is recorded when
+    the A-B-C angle is below ``_SNAP_MAX_ANGLE_DEG`` *and* at least one leg
+    |AB|/|BC| exceeds ``_SNAP_MIN_DISTANCE`` -- a hard reversal that also covered
+    real distance. Mirrors circlecore's ``Investigator.snaps`` (``ba = a - b``,
+    ``bc = c - b``, angle between them, leg lengths via the OR of both). Pure
+    geometry over the raw cursor stream; no beatmap needed.
+    """
+    snaps: list[Snap] = []
+    for i in range(1, len(samples) - 1):
+        _, x_a, y_a = samples[i - 1]
+        t_b, x_b, y_b = samples[i]
+        _, x_c, y_c = samples[i + 1]
+
+        bax, bay = x_a - x_b, y_a - y_b
+        bcx, bcy = x_c - x_b, y_c - y_b
+        ab = math.hypot(bax, bay)
+        bc = math.hypot(bcx, bcy)
+        if ab <= _SNAP_MIN_DISTANCE and bc <= _SNAP_MIN_DISTANCE:
+            continue  # neither leg cleared the distance floor -- too small to be a dart
+
+        angle = _snap_angle_deg(bax, bay, bcx, bcy)
+        if angle < _SNAP_MAX_ANGLE_DEG:
+            snaps.append(Snap(t_ms=t_b, angle_deg=angle, distance=max(ab, bc)))
+    return tuple(snaps)
+
+
 # --- serialization ----------------------------------------------------------
 #
 # ``ReplayFeatures`` is persisted per score (see
@@ -722,6 +819,22 @@ def features_to_dict(feats: ReplayFeatures) -> dict[str, Any]:
         "frozen_span_count": len(feats.frozen_spans),
         "straight_run_count": len(feats.straight_runs),
         "constant_velocity_run_count": len(feats.constant_velocity_runs),
+        "snap_count": len(feats.snaps),
+        # frametime summary scalars, surfaced at the top level (like the counts
+        # above) so they are cheap to read straight off the stored document. Not
+        # promoted to indexed columns yet -- that lands with the per-player
+        # baselines (learning phase), which is the first thing that aggregates
+        # them in SQL; pre-computing them here means that promotion needs no
+        # extractor change. The full frametime distribution is under "full detail"
+        # below. cv (coefficient of variation) is std/mean -- a unitless "how
+        # bunched" that a constant/mechanical cadence drives toward zero.
+        "frametime_median_ms": feats.frametime.p50,
+        "frametime_p10_ms": feats.frametime.p10,
+        "frametime_cv": (
+            feats.frametime.std / feats.frametime.mean
+            if feats.frametime.mean > 0
+            else 0.0
+        ),
         # full detail.
         "total_path": feats.total_path,
         "straight_line_displacement": feats.straight_line_displacement,
@@ -729,6 +842,7 @@ def features_to_dict(feats: ReplayFeatures) -> dict[str, Any]:
         "jitter_std": feats.jitter_std,
         "jitter_threshold": feats.jitter_threshold,
         "hold": _distribution_to_dict(feats.hold),
+        "frametime": _distribution_to_dict(feats.frametime),
         "segments": {
             "jump": _segment_to_dict(feats.jump),
             "stream": _segment_to_dict(feats.stream),
@@ -768,6 +882,14 @@ def features_to_dict(feats: ReplayFeatures) -> dict[str, Any]:
             }
             for span in feats.frozen_spans
         ],
+        "snaps": [
+            {
+                "t_ms": snap.t_ms,
+                "angle_deg": snap.angle_deg,
+                "distance": snap.distance,
+            }
+            for snap in feats.snaps
+        ],
     }
 
 
@@ -780,6 +902,7 @@ def features_from_dict(data: dict[str, Any]) -> ReplayFeatures:
         tap_count=data["tap_count"],
         uses_keyboard=data["uses_keyboard"],
         hold=_distribution_from_dict(data["hold"]),
+        frametime=_distribution_from_dict(data["frametime"]),
         jump=_segment_from_dict(segments["jump"]),
         stream=_segment_from_dict(segments["stream"]),
         idle=_segment_from_dict(segments["idle"]),
@@ -816,6 +939,14 @@ def features_from_dict(data: dict[str, Any]) -> ReplayFeatures:
                 frame_count=span["frame_count"],
             )
             for span in data["frozen_spans"]
+        ),
+        snaps=tuple(
+            Snap(
+                t_ms=snap["t_ms"],
+                angle_deg=snap["angle_deg"],
+                distance=snap["distance"],
+            )
+            for snap in data["snaps"]
         ),
         total_path=data["total_path"],
         straight_line_displacement=data["straight_line_displacement"],

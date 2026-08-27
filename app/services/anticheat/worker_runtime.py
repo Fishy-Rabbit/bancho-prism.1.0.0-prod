@@ -21,8 +21,10 @@ from app.metrics import increment_anticheat_flag
 from app.metrics import set_replay_analysis_queue_depth
 from app.repositories.anticheat_flags import AnticheatFlagsRepository
 from app.repositories.replay_analysis_queue import ReplayAnalysisQueue
+from app.repositories.score_replay_stats import PendingScore
 from app.repositories.score_replay_stats import ScoreReplayStatsRepository
 from app.repositories.scores import ScoresRepository
+from app.services.anticheat.features import EXTRACTOR_VERSION
 from app.services.anticheat.flag_review import FlagReviewService
 from app.services.anticheat.replay_analysis import AnalysisResult
 from app.services.anticheat.replay_analysis import ReplayAnalysisService
@@ -74,6 +76,17 @@ def build_replay_analysis_worker(
             replays_path / f"{score_id}.osr",
         )
 
+    async def fetch_stale(*, limit: int, min_score_id: int) -> list[PendingScore]:
+        # binds the current extractor version so the worker's backfill re-queues
+        # analysed rows produced by an older extractor. This is what makes an
+        # EXTRACTOR_VERSION bump (e.g. adding frametimes) actually reprocess the
+        # existing corpus instead of leaving stale feature vectors in place.
+        return await stats.fetch_stale_scores(
+            current_version=EXTRACTOR_VERSION,
+            limit=limit,
+            min_score_id=min_score_id,
+        )
+
     analysis = ReplayAnalysisService(read_replay_bytes=read_replay_bytes, stats=stats)
 
     # the durable half of "flag, never ban": a flagged report becomes a review
@@ -104,6 +117,7 @@ def build_replay_analysis_worker(
         queue=queue,
         analysis=analysis,
         fetch_unanalyzed=stats.fetch_unanalyzed_scores,
+        fetch_stale=fetch_stale,
         on_result=on_result,
         report_queue_depth=set_replay_analysis_queue_depth,
     )

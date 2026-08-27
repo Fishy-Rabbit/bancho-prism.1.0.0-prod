@@ -270,6 +270,34 @@ def test_zigzag_path_has_high_tortuosity() -> None:
     assert extract_features(_replay(frames)).tortuosity > 1.5
 
 
+# --- aim-correction snaps ---------------------------------------------------
+
+
+def test_hard_reversal_is_a_snap() -> None:
+    # cursor darts out to (50, 0) and straight back to (0, 0): a ~0-degree A-B-C
+    # angle over 50u legs -- exactly circleguard's Snap signature.
+    frames = [_frame(10, 0.0, 0.0), _frame(10, 50.0, 0.0), _frame(10, 0.0, 0.0)]
+    snaps = extract_features(_replay(frames)).snaps
+    assert len(snaps) == 1
+    assert snaps[0].t_ms == 20  # B is the second frame, at t = 10 + 10
+    assert snaps[0].angle_deg < 1e-6
+    assert snaps[0].distance == 50.0
+
+
+def test_wide_turn_is_not_a_snap() -> None:
+    # a 90-degree corner over long legs: the distance is there but the angle is
+    # far above the 10-degree snap threshold.
+    frames = [_frame(10, 0.0, 0.0), _frame(10, 50.0, 0.0), _frame(10, 50.0, 50.0)]
+    assert extract_features(_replay(frames)).snaps == ()
+
+
+def test_short_reversal_below_distance_floor_is_not_a_snap() -> None:
+    # a hard reversal but only 5u legs -- under the 8u distance floor, so it is
+    # motor jitter, not a dart onto a note.
+    frames = [_frame(10, 0.0, 0.0), _frame(10, 5.0, 0.0), _frame(10, 0.0, 0.0)]
+    assert extract_features(_replay(frames)).snaps == ()
+
+
 # --- robustness -------------------------------------------------------------
 
 
@@ -306,6 +334,17 @@ def test_features_round_trip_through_dict_is_a_fixed_point() -> None:
 
     assert feats.robotic_tap_runs != ()  # guard: the run list is actually tested
     assert feats.frozen_spans != ()
+
+    assert features_from_dict(features_to_dict(feats)) == feats
+
+
+def test_features_with_snaps_round_trip_through_dict() -> None:
+    # a hard out-and-back reversal produces a snap, so the snap branch of the
+    # serializer carries a non-empty payload through the round trip.
+    frames = [_frame(10, 0.0, 0.0), _frame(10, 50.0, 0.0), _frame(10, 0.0, 0.0)]
+    feats = extract_features(_replay(frames))
+
+    assert feats.snaps != ()  # guard: the snap list is actually tested
 
     assert features_from_dict(features_to_dict(feats)) == feats
 

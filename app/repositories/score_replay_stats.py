@@ -151,6 +151,12 @@ class ScoreReplayStatsTable(Base):
     )
 
     # full serialized ReplayFeatures document; null until analysed / when missing.
+    # The frametime summary (median/p10/cv + full distribution) rides inside this
+    # document; it is deliberately *not* promoted to its own columns yet -- that
+    # lands with the per-player baselines (learning phase), the first consumer
+    # that aggregates frametimes in SQL. Until then frametimes cost no schema
+    # change, so bumping EXTRACTOR_VERSION to add them re-analyses cleanly on an
+    # existing install without waiting on a migration.
     features = Column("features", MEDIUMTEXT, nullable=True)
     analyzed_at = Column("analyzed_at", DateTime, nullable=True)
 
@@ -456,6 +462,53 @@ class ScoreReplayStatsRepository:
             .where(ScoreReplayStatsTable.score_id.is_(None))
             .where(ScoresTable.id > min_score_id)
             .order_by(ScoresTable.id)
+            .limit(limit)
+        )
+        rows = await self._database.fetch_all(select_stmt)
+        return [
+            PendingScore(score_id=row["score_id"], mode=row["mode"]) for row in rows
+        ]
+
+    async def fetch_stale_scores(
+        self,
+        *,
+        current_version: int,
+        limit: int,
+        min_score_id: int = 0,
+    ) -> list[PendingScore]:
+        """Analysed scores whose features predate ``current_version``.
+
+        The companion to ``fetch_unanalyzed_scores``: that finds scores with no
+        analysis row at all; this finds scores that *were* analysed but by an
+        older extractor. Without it, bumping ``EXTRACTOR_VERSION`` (e.g. to add a
+        new feature like frametimes) would leave every existing row frozen at its
+        old vintage -- the anti-join only ever sees rows with *no* stats, so a
+        re-run would never happen and stale vectors would be judged against fresh
+        thresholds. This is the re-queue path the ``extractor_version`` column and
+        its index exist for (see the module docstring).
+
+        Only ``analyzed`` rows are eligible. ``replay_missing`` has no ``.osr`` to
+        re-read, and ``error`` is already re-run by the missing-row path, so
+        re-selecting either here would just churn. Reads ``score_id``/``mode``
+        straight off this table -- an analysed row already carries both, so unlike
+        the unanalyzed anti-join there is no need to join ``scores``.
+
+        Walks forward by ``score_id`` with ``min_score_id`` as an exclusive lower
+        bound (not ``OFFSET``), so a long re-analysis pass makes steady forward
+        progress across pages even as rows are rewritten underneath it. Pass the
+        last id seen to get the next page.
+        """
+        select_stmt = (
+            select(
+                ScoreReplayStatsTable.score_id.label("score_id"),
+                ScoreReplayStatsTable.mode.label("mode"),
+            )
+            .where(
+                ScoreReplayStatsTable.status == ReplayAnalysisStatus.ANALYZED.value,
+            )
+            .where(ScoreReplayStatsTable.extractor_version < current_version)
+            .where(ScoreReplayStatsTable.score_id > min_score_id)
+            .order_by(ScoreReplayStatsTable.score_id)
             .limit(limit)
         )
         rows = await self._database.fetch_all(select_stmt)

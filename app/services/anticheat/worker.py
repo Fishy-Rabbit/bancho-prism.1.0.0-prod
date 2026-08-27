@@ -37,7 +37,13 @@ from app.services.anticheat.replay_analysis import ReplayAnalysisService
 
 
 class UnanalyzedScoreFetcher(Protocol):
-    """Fetch a page of scores with no analysis row yet (the backfill source)."""
+    """Fetch a page of scores to (re)enqueue for analysis (a backfill source).
+
+    Shared by both backfill passes: the anti-join of never-analysed scores, and
+    the stale-version re-queue. Both page forward by an exclusive ``min_score_id``
+    lower bound. The stale fetcher binds its ``current_version`` at wiring time,
+    so from the worker's side both sources have this same shape.
+    """
 
     def __call__(
         self,
@@ -79,6 +85,11 @@ class ReplayAnalysisWorker:
     queue: ReplayAnalysisQueue
     analysis: ReplayAnalysisService
     fetch_unanalyzed: UnanalyzedScoreFetcher
+    # optional stale-version re-queue source. When wired (see worker_runtime), a
+    # bump to EXTRACTOR_VERSION reprocesses already-analysed rows; when None, only
+    # never-analysed scores are backfilled. Kept optional so the worker still
+    # builds in tests / deployments that don't care about re-analysis.
+    fetch_stale: UnanalyzedScoreFetcher | None = None
     on_result: ResultObserver = _ignore_result
     report_queue_depth: QueueDepthReporter = _ignore_depth
     # how long one BRPOP waits before the consume loop cycles (so shutdown /
@@ -112,14 +123,38 @@ class ReplayAnalysisWorker:
     async def backfill_once(self) -> int:
         """Enqueue outstanding scores from the durable table; return the count.
 
-        Walks forward by score id in bounded pages. Stops early once a page
-        comes back short (the table is drained) so a quiet server does almost no
-        work. The number returned is how many ids were pushed this pass.
+        Two sources, drained in turn. First the anti-join of scores with no
+        analysis row at all (the recovery net described in the module docstring).
+        Then, if a stale-version fetcher is wired, analysed rows whose features
+        predate the current extractor -- so bumping ``EXTRACTOR_VERSION`` actually
+        reprocesses the corpus rather than freezing every existing row at its old
+        vintage. Both walk forward in bounded pages and stop early when drained,
+        so a quiet, up-to-date server does almost no work. The count returned is
+        the total pushed across both passes.
+
+        Re-enqueueing is safe: analysis re-upserts the same terminal row, so a
+        score already on the queue (or freshly analysed by the consume loop
+        between a fetch and its push) just gets harmlessly re-analysed.
+        """
+        enqueued = await self._drain(self.fetch_unanalyzed)
+        if self.fetch_stale is not None:
+            enqueued += await self._drain(self.fetch_stale)
+
+        await self._publish_depth()
+        return enqueued
+
+    async def _drain(self, fetch: UnanalyzedScoreFetcher) -> int:
+        """Page through one backfill source, enqueueing every id it yields.
+
+        Walks forward by score id in bounded pages, stopping early once a page
+        comes back short (that source is drained). Returns how many ids were
+        pushed. Does not publish queue depth -- the caller does that once after
+        all sources are drained.
         """
         cursor = 0
         enqueued = 0
         for _ in range(self.backfill_max_batches):
-            pending = await self.fetch_unanalyzed(
+            pending = await fetch(
                 limit=self.backfill_batch_size,
                 min_score_id=cursor,
             )
@@ -134,7 +169,6 @@ class ReplayAnalysisWorker:
             if len(pending) < self.backfill_batch_size:
                 break
 
-        await self._publish_depth()
         return enqueued
 
     async def _publish_depth(self) -> None:
