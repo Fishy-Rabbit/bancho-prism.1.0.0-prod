@@ -16,8 +16,10 @@ from __future__ import annotations
 from app.services.anticheat.detectors import DEFAULT_CONFIG
 from app.services.anticheat.detectors import Severity
 from app.services.anticheat.detectors import detect_aim_controller
+from app.services.anticheat.detectors import detect_aim_snaps
 from app.services.anticheat.detectors import detect_hold_uniformity
 from app.services.anticheat.detectors import detect_robotic_timing
+from app.services.anticheat.detectors import detect_timewarp
 from app.services.anticheat.detectors import detect_timing_aim_independence
 from app.services.anticheat.detectors import max_severity
 from app.services.anticheat.detectors import run_detectors
@@ -27,6 +29,7 @@ from app.services.anticheat.features import ReplayFeatures
 from app.services.anticheat.features import RoboticTapRun
 from app.services.anticheat.features import SegmentKind
 from app.services.anticheat.features import SegmentStats
+from app.services.anticheat.features import Snap
 from app.services.anticheat.features import StraightRun
 
 
@@ -35,13 +38,18 @@ def _dist(
     n: int = 0,
     mean: float = 0.0,
     std: float = 0.0,
+    p10: float = 0.0,
+    p50: float = 0.0,
     p90: float = 0.0,
     mx: float = 0.0,
 ) -> Distribution:
     # only the fields the detectors read are meaningful; the rest stay zero.
+    # p50 matters for D1 timewarp (median frametime); p10 is accepted for the
+    # same family of tests. Callers that don't pass them get the old all-zero
+    # percentiles, unchanged.
     return Distribution(
         n=n, mean=mean, std=std,
-        p10=0.0, p25=0.0, p50=0.0, p75=0.0, p90=p90, p99=0.0, max=mx,
+        p10=p10, p25=0.0, p50=p50, p75=0.0, p90=p90, p99=0.0, max=mx,
     )
 
 
@@ -78,18 +86,25 @@ def _human_jump() -> SegmentStats:
 def _feats(
     *,
     hold: Distribution | None = None,
+    frametime: Distribution | None = None,
     jump: SegmentStats | None = None,
     tap_count: int = 500,
+    frame_count: int = 10_000,
     robotic_tap_runs: tuple[RoboticTapRun, ...] = (),
     straight_runs: tuple[StraightRun, ...] = (),
     constant_velocity_runs: tuple[ConstantVelocityRun, ...] = (),
+    snaps: tuple[Snap, ...] = (),
 ) -> ReplayFeatures:
     return ReplayFeatures(
-        frame_count=10_000,
+        frame_count=frame_count,
         duration_ms=120_000,
         tap_count=tap_count,
         uses_keyboard=True,
         hold=hold or _dist(n=200, mean=45.0, std=18.0, p90=70.0),  # human spread
+        # clean human frame cadence: ~60 fps median with real jitter (cov ~0.22),
+        # so D1 timewarp reads NONE on a default replay. Tests that exercise D1
+        # override frametime with an implausibly fast or too-regular cadence.
+        frametime=frametime or _dist(n=1000, mean=16.7, std=3.6, p50=16.7, p90=21.0),
         jump=jump or _human_jump(),
         stream=_seg(SegmentKind.STREAM),
         idle=_seg(SegmentKind.IDLE),
@@ -97,6 +112,7 @@ def _feats(
         straight_runs=straight_runs,
         constant_velocity_runs=constant_velocity_runs,
         frozen_spans=(),
+        snaps=snaps,
         total_path=0.0,
         straight_line_displacement=0.0,
         tortuosity=1.5,
@@ -117,6 +133,12 @@ def _straight(k: int) -> tuple[StraightRun, ...]:
 
 def _const_v(k: int) -> tuple[ConstantVelocityRun, ...]:
     return tuple(ConstantVelocityRun(start_ms=i, frame_count=5, velocity=1.0) for i in range(k))
+
+
+def _snaps(k: int) -> tuple[Snap, ...]:
+    # k hard-reversal snaps; the detector reads only their count against
+    # frame_count, so the exact angle/distance/time are representative filler.
+    return tuple(Snap(t_ms=i * 16, angle_deg=2.0, distance=40.0) for i in range(k))
 
 
 # --- severity helper --------------------------------------------------------
@@ -297,6 +319,125 @@ def test_independence_both_machine_is_none() -> None:
     assert sig.flagged is False
 
 
+# --- D1 timewarp ------------------------------------------------------------
+
+
+def _ft(
+    *,
+    n: int = 1000,
+    mean: float = 16.7,
+    std: float = 3.6,
+    p50: float | None = None,
+) -> Distribution:
+    # frametime distribution: p50 (median) drives the "too fast" test, std/mean
+    # the "too regular" one. Defaults to a clean human ~60 fps cadence; p50
+    # tracks the mean unless overridden.
+    return _dist(n=n, mean=mean, std=std, p50=mean if p50 is None else p50)
+
+
+def test_timewarp_human_cadence_is_not_flagged() -> None:
+    sig = detect_timewarp(_feats())
+    assert sig.severity is Severity.NONE
+    assert sig.flagged is False
+
+
+def test_timewarp_too_few_frames_is_none() -> None:
+    sig = detect_timewarp(_feats(frametime=_ft(n=100)))
+    assert sig.severity is Severity.NONE
+
+
+def test_timewarp_implausibly_fast_median_flags_medium() -> None:
+    # real-time median 6ms (< 11ms floor) but jittery (cov 0.27) -> fast only.
+    sig = detect_timewarp(_feats(frametime=_ft(mean=6.0, std=1.6, p50=6.0)))
+    assert sig.severity is Severity.MEDIUM
+    assert sig.flagged is True
+
+
+def test_timewarp_too_regular_cadence_flags_medium() -> None:
+    # human-speed median (16.7ms) but near-constant (cov 0.03 <= 0.08) -> regular only.
+    sig = detect_timewarp(_feats(frametime=_ft(mean=16.7, std=0.5, p50=16.7)))
+    assert sig.severity is Severity.MEDIUM
+    assert sig.flagged is True
+
+
+def test_timewarp_fast_and_regular_is_high() -> None:
+    sig = detect_timewarp(_feats(frametime=_ft(mean=6.0, std=0.2, p50=6.0)))
+    assert sig.severity is Severity.HIGH
+    assert sig.flagged is True
+
+
+def test_timewarp_near_fast_is_low_not_flagged() -> None:
+    # median 13ms: above the 11ms floor but within the 1.25x notice band.
+    sig = detect_timewarp(_feats(frametime=_ft(mean=13.0, std=3.5, p50=13.0)))
+    assert sig.severity is Severity.LOW
+    assert sig.flagged is False
+
+
+def test_timewarp_clock_rate_normalizes_median() -> None:
+    # a raw median of 9ms flags as too-fast at nomod, but a 0.5x clock rate
+    # normalises it to 18ms real-time, clearing the detector -- the mechanism
+    # that keeps rate mods from false-positiving.
+    ft = _ft(mean=9.0, std=2.4, p50=9.0)
+    assert detect_timewarp(_feats(frametime=ft), clock_rate=1.0).flagged is True
+    cleared = detect_timewarp(_feats(frametime=ft), clock_rate=0.5)
+    assert cleared.severity is Severity.NONE
+    assert cleared.flagged is False
+
+
+# --- D2 aim-correction snaps ------------------------------------------------
+
+
+def test_snaps_clean_replay_is_not_flagged() -> None:
+    # the human baseline carries no snaps at all.
+    sig = detect_aim_snaps(_feats())
+    assert sig.severity is Severity.NONE
+    assert sig.flagged is False
+
+
+def test_snaps_too_few_frames_is_none() -> None:
+    # a burst of snaps on a replay below the frame gate can't be judged.
+    sig = detect_aim_snaps(_feats(frame_count=400, snaps=_snaps(30)))
+    assert sig.severity is Severity.NONE
+
+
+def test_snaps_dense_pattern_is_high() -> None:
+    # 60 snaps / 10k frames = 6.0 per 1k (>= 2x the 3.0 floor) -> HIGH.
+    sig = detect_aim_snaps(_feats(frame_count=10_000, snaps=_snaps(60)))
+    assert sig.severity is Severity.HIGH
+    assert sig.flagged is True
+
+
+def test_snaps_above_floor_is_medium() -> None:
+    # 30 snaps / 10k frames = 3.0 per 1k: clears the count and rate floors but
+    # not the 2x dense band -> MEDIUM.
+    sig = detect_aim_snaps(_feats(frame_count=10_000, snaps=_snaps(30)))
+    assert sig.severity is Severity.MEDIUM
+    assert sig.flagged is True
+
+
+def test_snaps_count_without_rate_is_low_not_flagged() -> None:
+    # 25 snaps clears the count floor, but over 40k frames the rate is 0.6/1k,
+    # under the 3.0 floor -> one side only -> LOW.
+    sig = detect_aim_snaps(_feats(frame_count=40_000, snaps=_snaps(25)))
+    assert sig.severity is Severity.LOW
+    assert sig.flagged is False
+
+
+def test_snaps_rate_without_count_is_low_not_flagged() -> None:
+    # 10 snaps / 1k frames = 10/1k (high rate) but only 10 snaps, under the
+    # count floor -> one side only -> LOW.
+    sig = detect_aim_snaps(_feats(frame_count=1_000, snaps=_snaps(10)))
+    assert sig.severity is Severity.LOW
+    assert sig.flagged is False
+
+
+def test_snaps_sparse_is_none() -> None:
+    # 10 snaps / 10k frames = 1.0/1k: below both floors -> NONE.
+    sig = detect_aim_snaps(_feats(frame_count=10_000, snaps=_snaps(10)))
+    assert sig.severity is Severity.NONE
+    assert sig.flagged is False
+
+
 # --- aggregation ------------------------------------------------------------
 
 
@@ -317,7 +458,7 @@ def test_report_flags_and_ranks_when_a_detector_hits() -> None:
     assert report.triggered[0].severity is Severity.HIGH
 
 
-def test_report_covers_all_four_detectors() -> None:
+def test_report_covers_all_detectors() -> None:
     report = run_detectors(_feats())
     codes = {s.code for s in report.signals}
     assert codes == {
@@ -325,4 +466,32 @@ def test_report_covers_all_four_detectors() -> None:
         "B3_AIM_CONTROLLER",
         "B4_ROBOTIC_TIMING",
         "C1_TIMING_AIM_INDEPENDENCE",
+        "D1_TIMEWARP",
+        "D2_AIM_SNAPS",
     }
+
+
+def test_report_flags_when_only_snaps_hit() -> None:
+    # a replay clean on every channel but the snap density should still surface
+    # via D2 alone -- confirms detect_aim_snaps is wired into run_detectors.
+    report = run_detectors(_feats(snaps=_snaps(60)))
+    assert report.flagged is True
+    assert report.severity is Severity.HIGH
+    assert "D2_AIM_SNAPS" in {s.code for s in report.triggered}
+
+
+def test_report_flags_when_only_timewarp_hits() -> None:
+    # a clean-movement replay whose sole tell is an implausibly fast, robotic
+    # frame cadence should still surface via D1 alone.
+    report = run_detectors(_feats(frametime=_ft(mean=6.0, std=0.2, p50=6.0)))
+    assert report.flagged is True
+    assert report.severity is Severity.HIGH
+    assert "D1_TIMEWARP" in {s.code for s in report.triggered}
+
+
+def test_report_clock_rate_is_forwarded_to_timewarp() -> None:
+    # the same fast raw cadence flags at nomod but not once the clock rate
+    # normalises it -- run_detectors must thread clock_rate through to D1.
+    feats = _feats(frametime=_ft(mean=9.0, std=2.4, p50=9.0))
+    assert run_detectors(feats, clock_rate=1.0).flagged is True
+    assert run_detectors(feats, clock_rate=0.5).flagged is False

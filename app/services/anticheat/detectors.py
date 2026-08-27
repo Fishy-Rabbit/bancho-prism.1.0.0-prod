@@ -22,7 +22,7 @@ replays, without touching detector logic. Until that happens every signal is
 advisory and ``confidence`` is a *ranking* aid for the review queue, not a
 calibrated probability of cheating.
 
-The four movement detectors, and what each is meant to catch:
+The detectors, and what each is meant to catch:
 
 - **B1 hold-duration** -- auto-tap / replay injection collapses the spread of
   key-hold widths (to a near-constant width, or to instantaneous clicks) where a
@@ -36,9 +36,19 @@ The four movement detectors, and what each is meant to catch:
   track one skill level together; a *partial* cheat decouples them (machine-clean
   aim with human timing, or robotic timing with human aim). This is the signal
   the single-channel detectors under-weight on their own.
+- **D1 timewarp** -- a timewarp/injection tell in the frame cadence itself: a
+  frametime distribution that is too regular for real hardware, or (once
+  normalised to real time by the replay's clock rate) too fast to be a genuine
+  sampling interval. Ported from circleguard's frametime check.
+- **D2 aim-correction snaps** -- circleguard's ``Snap`` check: hard single-frame
+  cursor reversals across a real distance (extracted in ``features.py``), flagged
+  when their density over the cursor stream is implausibly high for human aim.
 
 None of these read the beatmap: they are self-contained over the replay, so they
-degrade gracefully on any map and can run before map metadata is resolved.
+degrade gracefully on any map and can run before map metadata is resolved. D1
+optionally takes the replay's mod clock rate to normalise frametimes (mods are
+score metadata, not beatmap geometry); absent it, it assumes nomod and still
+runs on its scale-invariant regularity signal.
 """
 
 from __future__ import annotations
@@ -168,6 +178,49 @@ class DetectorConfig:
     # ...and the machine-clean side is at least this clean (so two mediocre
     # humans whose two scores happen to differ are not flagged).
     independence_machine_floor: float = 0.6
+
+    # --- D1 timewarp (frametime cadence) ---
+    # need this many frames before the frametime distribution means anything.
+    timewarp_min_frames: int = 500
+    # real hardware frame cadence always jitters (VSync + OS scheduling), so a
+    # coefficient of variation at/under this is an unnaturally even cadence --
+    # interpolated/injected frames, or a fixed-step timewarp. std/mean is
+    # scale-invariant, so this needs no clock-rate normalisation and holds
+    # unchanged across rate mods.
+    timewarp_cv_floor: float = 0.08
+    # a median frametime (ms), normalised to real time by dividing by the
+    # replay's clock rate, at/under this is implausibly fast sampling for
+    # sustained play. The division is circleguard's cv (clock-converted) vs ucv
+    # distinction: a DT (1.5x) replay's frametimes sit on a sped clock, and
+    # judging them raw would false-positive every DT play. Provisional -- the
+    # ~16.7ms (60 fps) human cluster is the reference; re-derive per-mod against
+    # the server's own baseline.
+    timewarp_median_floor_ms: float = 11.0
+
+    # --- D2 aim-correction snaps ---
+    # need this many cursor frames before a snap density means anything.
+    snap_min_frames: int = 500
+    # circleguard-style aim-correction snaps per 1000 cursor frames. A human
+    # produces the odd snap (a flick overshoot yanked back), but a sustained rate
+    # of hard single-frame reversals onto notes is an aim-correction assist.
+    # std/mean-free -- a straight rate over the frame gate.
+    snap_rate_floor: float = 3.0
+    # ...paired with an absolute count so a handful of snaps in a just-long-enough
+    # replay can't read as a high rate; both must clear before D2 flags.
+    snap_count_floor: int = 20
+
+    # --- D3 replay similarity (steal) ---
+    # mean euclidean cursor distance (osu!px) between two time-aligned replays
+    # at/under which the paths are too identical to be independent play -- a
+    # copied/stolen replay. circleguard's steal_max_sim (~18px) is the reference;
+    # provisional, re-derived from the server's own near-miss pairs.
+    steal_max_sim: float = 18.0
+    # a wider band that is worth a non-flagging note (unusually close, but two
+    # good players on an aim-heavy map can legitimately trace similar lines).
+    steal_near_sim: float = 30.0
+    # need at least this many time-aligned sample points before a mean distance
+    # is meaningful; a brief overlap can be coincidentally close.
+    steal_min_overlap_points: int = 500
 
 
 DEFAULT_CONFIG = DetectorConfig()
@@ -546,28 +599,252 @@ def detect_timing_aim_independence(
     )
 
 
+# --- D1: timewarp / frametime cadence ---------------------------------------
+
+
+def detect_timewarp(
+    feats: ReplayFeatures,
+    cfg: DetectorConfig = DEFAULT_CONFIG,
+    *,
+    clock_rate: float = 1.0,
+) -> DetectionSignal:
+    """D1 -- flag a timewarped / injected frame cadence from the frametimes.
+
+    Ported from circleguard's frametime check. Two independent tells over the
+    inter-frame-interval distribution (``feats.frametime``):
+
+    - **too regular** -- real hardware frame cadence always jitters, so a
+      coefficient of variation at/under ``timewarp_cv_floor`` is an unnaturally
+      even cadence (interpolated/injected frames, or a fixed-step timewarp).
+      ``std/mean`` is scale-invariant, so this holds regardless of rate mods.
+    - **too fast** -- a median frametime, *normalised to real time by the clock
+      rate*, at/under ``timewarp_median_floor_ms`` is implausibly fast sampling
+      for sustained play. Dividing by ``clock_rate`` is the cv/ucv conversion
+      circleguard exposes: a DT (1.5x) replay's recorded frametimes are on a
+      sped clock, and judging them raw would false-positive every DT play.
+
+    ``clock_rate`` defaults to 1.0 (nomod). The analysis worker analyses the
+    bare stored frame stream, which carries no mods, so it runs at 1.0 -- correct
+    for the nomod majority and never harsher for rate mods; the staff analysis
+    endpoint, which has the score row, passes the true rate for a mod-accurate
+    read. The full frametime histogram a reviewer eyeballs is served separately
+    (``series.py``); this detector keys on the robust scalar summary.
+
+    Pure and advisory: like every detector here it only ever flags for review.
+    """
+    ft = feats.frametime
+    real_median = ft.p50 / clock_rate if clock_rate > 0.0 else ft.p50
+    evidence: dict[str, float] = {
+        "frametime_n": float(ft.n),
+        "frametime_median_ms": ft.p50,
+        "frametime_real_median_ms": real_median,
+        "clock_rate": clock_rate,
+    }
+
+    if ft.n < cfg.timewarp_min_frames:
+        return DetectionSignal(
+            code="D1_TIMEWARP",
+            title="Timewarp / frametime cadence",
+            severity=Severity.NONE,
+            confidence=0.0,
+            flagged=False,
+            detail=f"only {ft.n} frames; need {cfg.timewarp_min_frames} to judge cadence",
+            evidence=evidence,
+        )
+
+    cv = _coefficient_of_variation(ft)
+    if cv is not None:
+        evidence["frametime_cv"] = cv
+    cov_str = f"{cv:.3f}" if cv is not None else "n/a"
+
+    too_regular = cv is not None and cv <= cfg.timewarp_cv_floor
+    too_fast = 0.0 < real_median <= cfg.timewarp_median_floor_ms
+
+    reasons: list[str] = []
+    if too_fast:
+        reasons.append(
+            f"real-time median {real_median:.1f}ms <= {cfg.timewarp_median_floor_ms:.0f}ms",
+        )
+    if too_regular:
+        reasons.append(f"near-constant cadence (cov {cov_str})")
+
+    if too_fast and too_regular:
+        return DetectionSignal(
+            code="D1_TIMEWARP",
+            title="Timewarp / frametime cadence",
+            severity=Severity.HIGH,
+            confidence=0.85,
+            flagged=True,
+            detail="frame cadence is both too fast and too regular for hardware: "
+            + "; ".join(reasons),
+            evidence=evidence,
+        )
+    if too_fast or too_regular:
+        return DetectionSignal(
+            code="D1_TIMEWARP",
+            title="Timewarp / frametime cadence",
+            severity=Severity.MEDIUM,
+            confidence=0.6,
+            flagged=True,
+            detail=reasons[0],
+            evidence=evidence,
+        )
+
+    # merely on the fast / regular side: worth noting for a reviewer, not a flag.
+    near_fast = 0.0 < real_median <= cfg.timewarp_median_floor_ms * 1.25
+    near_regular = cv is not None and cv <= cfg.timewarp_cv_floor * 1.5
+    if near_fast or near_regular:
+        return DetectionSignal(
+            code="D1_TIMEWARP",
+            title="Timewarp / frametime cadence",
+            severity=Severity.LOW,
+            confidence=0.3,
+            flagged=False,
+            detail=f"frame cadence is on the fast/regular side (median {real_median:.1f}ms, cov {cov_str})",
+            evidence=evidence,
+        )
+
+    return DetectionSignal(
+        code="D1_TIMEWARP",
+        title="Timewarp / frametime cadence",
+        severity=Severity.NONE,
+        confidence=0.0,
+        flagged=False,
+        detail=f"frame cadence looks human (median {real_median:.1f}ms, cov {cov_str})",
+        evidence=evidence,
+    )
+
+
+# --- D2: aim-correction snaps -----------------------------------------------
+
+
+def detect_aim_snaps(
+    feats: ReplayFeatures,
+    cfg: DetectorConfig = DEFAULT_CONFIG,
+) -> DetectionSignal:
+    """D2 -- flag aim-correction snaps: hard cursor reversals onto the note.
+
+    Ported from circleguard's ``Snap`` / aim-correction check. ``features.py``
+    extracts every snap (a cursor sample where the path darts out and back --
+    a sharp A-B-C angle across a real distance); this detector judges their
+    *density* against the cursor frame count. A human leaves the occasional snap
+    (a flick overshoot yanked back), but a sustained rate of hard single-frame
+    reversals is an aim assist snapping onto each note. Both an absolute count
+    and a per-frame rate must clear their floors, so a brief burst on a short
+    replay doesn't read as a high rate. Beatmap-free -- pure cursor geometry.
+
+    Pure and advisory: it only ever flags for review.
+    """
+    snap_count = len(feats.snaps)
+    frames = feats.frame_count
+    rate = (snap_count / frames * 1000.0) if frames > 0 else 0.0
+    evidence: dict[str, float] = {
+        "snap_count": float(snap_count),
+        "frame_count": float(frames),
+        "snaps_per_1k_frames": rate,
+    }
+
+    if frames < cfg.snap_min_frames:
+        return DetectionSignal(
+            code="D2_AIM_SNAPS",
+            title="Aim-correction snaps",
+            severity=Severity.NONE,
+            confidence=0.0,
+            flagged=False,
+            detail=f"only {frames} frames; need {cfg.snap_min_frames} to judge snap density",
+            evidence=evidence,
+        )
+
+    enough = snap_count >= cfg.snap_count_floor
+    high_rate = rate >= cfg.snap_rate_floor
+    very_dense = rate >= cfg.snap_rate_floor * 2.0
+
+    if enough and high_rate and very_dense:
+        return DetectionSignal(
+            code="D2_AIM_SNAPS",
+            title="Aim-correction snaps",
+            severity=Severity.HIGH,
+            confidence=0.85,
+            flagged=True,
+            detail=(
+                f"{snap_count} aim-correction snaps at {rate:.1f}/1k frames -- a dense "
+                f"pattern of hard reversals onto notes"
+            ),
+            evidence=evidence,
+        )
+    if enough and high_rate:
+        return DetectionSignal(
+            code="D2_AIM_SNAPS",
+            title="Aim-correction snaps",
+            severity=Severity.MEDIUM,
+            confidence=0.6,
+            flagged=True,
+            detail=(
+                f"{snap_count} aim-correction snaps at {rate:.1f}/1k frames "
+                f"(>= {cfg.snap_rate_floor}) -- more reversals than human aim carries"
+            ),
+            evidence=evidence,
+        )
+    if enough or high_rate:
+        return DetectionSignal(
+            code="D2_AIM_SNAPS",
+            title="Aim-correction snaps",
+            severity=Severity.LOW,
+            confidence=0.3,
+            flagged=False,
+            detail=(
+                f"{snap_count} snaps at {rate:.1f}/1k frames -- on the high side but "
+                f"below the flag line"
+            ),
+            evidence=evidence,
+        )
+    return DetectionSignal(
+        code="D2_AIM_SNAPS",
+        title="Aim-correction snaps",
+        severity=Severity.NONE,
+        confidence=0.0,
+        flagged=False,
+        detail=f"{snap_count} snaps at {rate:.1f}/1k frames -- within human range",
+        evidence=evidence,
+    )
+
+
 # --- aggregation ------------------------------------------------------------
 
 
+# the uniform ``(feats, cfg)`` detectors. D1 timewarp is run separately because
+# it additionally takes the replay's clock rate (see ``run_detectors``).
 _MOVEMENT_DETECTORS = (
     detect_hold_uniformity,
     detect_aim_controller,
     detect_robotic_timing,
     detect_timing_aim_independence,
+    detect_aim_snaps,
 )
 
 
 def run_detectors(
     feats: ReplayFeatures,
     cfg: DetectorConfig = DEFAULT_CONFIG,
+    *,
+    clock_rate: float = 1.0,
 ) -> DetectionReport:
-    """Run every movement detector and roll the signals into one report.
+    """Run every detector and roll the signals into one report.
+
+    ``clock_rate`` is the replay's mod speed multiplier (1.0 nomod, 1.5 DT,
+    0.75 HT), forwarded to D1 timewarp so its frametime read is normalised to
+    real time; every other detector is scale-invariant and ignores it. It
+    defaults to 1.0, which is correct for nomod and conservative otherwise, so
+    the worker (which has no mods on the bare frame stream) can call this as-is.
 
     Pure. The report is advisory input to the staff review queue, never an
     auto-ban: ``flagged`` means "a human should look", set when any detector
     reached MEDIUM.
     """
-    signals = tuple(detector(feats, cfg) for detector in _MOVEMENT_DETECTORS)
+    signals = tuple(
+        [detector(feats, cfg) for detector in _MOVEMENT_DETECTORS]
+        + [detect_timewarp(feats, cfg, clock_rate=clock_rate)],
+    )
     severity = max_severity(tuple(s.severity for s in signals))
     flagged = _severity_rank(severity) >= _severity_rank(Severity.MEDIUM)
     return DetectionReport(signals=signals, flagged=flagged, severity=severity)
